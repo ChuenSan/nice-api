@@ -67,7 +67,12 @@ import {
   isTagAggregateRow,
   getChannelTypeLabel,
 } from '../lib'
-import type { Channel, ChannelSortBy } from '../types'
+import type {
+  Channel,
+  ChannelSortBy,
+  GetChannelsResponse,
+  SearchChannelsResponse,
+} from '../types'
 import { ChannelCard } from './channel-card'
 import {
   ChannelPriorityCell,
@@ -98,6 +103,19 @@ function isDisabledChannelRow(channel: Channel) {
   return (
     !isTagAggregateRow(channel) && channel.status !== CHANNEL_STATUS.ENABLED
   )
+}
+
+// The list query returns the full list response (which carries the global order
+// snapshot) or the search response (which does not). Read the snapshot through
+// the declared response types rather than casting at each use.
+function channelOrderSnapshot(
+  response: GetChannelsResponse | SearchChannelsResponse | undefined
+): string | undefined {
+  const payload = response?.data
+  if (payload && 'order_snapshot' in payload) {
+    return payload.order_snapshot
+  }
+  return undefined
 }
 
 export function ChannelsTable() {
@@ -322,6 +340,7 @@ export function ChannelsTable() {
 
   const totalCount = data?.data?.total || 0
   const typeCounts = data?.data?.type_counts
+  const orderSnapshot = channelOrderSnapshot(data)
 
   const instructionsId = useId()
   let disabledReason: string | undefined
@@ -352,11 +371,7 @@ export function ChannelsTable() {
     disabledReason = t(
       'Wait for the channel list to finish loading before reordering.'
     )
-  } else if (
-    isError ||
-    !('order_snapshot' in (data?.data || {})) ||
-    !(data?.data as { order_snapshot?: string })?.order_snapshot
-  ) {
+  } else if (isError || !orderSnapshot) {
     disabledReason = t(
       'Refresh the complete priority list to enable reordering.'
     )
@@ -367,7 +382,7 @@ export function ChannelsTable() {
   }
   const priorityOrder = useChannelPriorityOrder({
     channels,
-    snapshot: (data?.data as { order_snapshot?: string })?.order_snapshot,
+    snapshot: orderSnapshot,
     total: totalCount,
     page: pagination.pageIndex + 1,
     pageSize: pagination.pageSize,
