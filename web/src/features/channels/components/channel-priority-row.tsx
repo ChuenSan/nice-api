@@ -65,7 +65,7 @@ export function ChannelPriorityCell(props: CellContext<Channel, unknown>) {
   return <ChannelPriorityHandle id={props.row.original.id} {...context} />
 }
 
-export function ChannelPriorityHandle(props: HandleProps) {
+function ChannelPriorityHandle(props: HandleProps) {
   const { t } = useTranslation()
   const drag = useContext(DragContext)
   const moving = props.order.activeId === props.id && !props.order.saving
