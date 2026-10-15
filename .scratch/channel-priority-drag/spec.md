@@ -1,6 +1,6 @@
 # 渠道拖动调整优先级
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 
