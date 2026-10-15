@@ -22,6 +22,8 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { InferenceStatus } from './lib/inference-status'
 import type {
+  ReorderChannelPriorityParams,
+  ReorderChannelPriorityResponse,
   AddChannelRequest,
   BatchDeleteParams,
   BatchSetTagParams,
@@ -698,4 +700,15 @@ export async function getPrefillGroups(
 }> {
   const res = await api.get('/api/prefill_group', { params: { type } })
   return res.data
+}
+
+export async function reorderChannelPriority(
+  params: ReorderChannelPriorityParams
+): Promise<ReorderChannelPriorityResponse> {
+  const res = await api.post(
+    '/api/channel/priority/reorder',
+    params,
+    channelActionConfig({ skipAuthRefresh: true })
+  )
+  return requireServerSuccess(res.data)
 }

@@ -32,6 +32,7 @@ import type { DataTableColumnClassName } from './types'
 
 type DataTableRowProps<TData> = {
   row: Row<TData>
+  render?: (props: React.ComponentProps<typeof TableRow>) => React.ReactNode
   className?: string
   getColumnClassName?: DataTableColumnClassName
   cellRenderColumns?: TanstackTable<TData>['options']['columns']
@@ -49,6 +50,7 @@ type DataTableRowInnerProps<TData> = DataTableRowProps<TData> & {
 
 function DataTableRowInner<TData>({
   row,
+  render,
   isSelected,
   className,
   getColumnClassName,
@@ -61,12 +63,8 @@ function DataTableRowInner<TData>({
   void cellRenderColumns
   void visibleColumnIds
 
-  return (
-    <TableRow
-      data-state={isSelected ? 'selected' : undefined}
-      className={className}
-      {...rowProps}
-    >
+  const children = (
+    <>
       {row.getVisibleCells().map((cell) => {
         const renderedCell = renderCellContent(cell)
 
@@ -84,8 +82,15 @@ function DataTableRowInner<TData>({
           </TableCell>
         )
       })}
-    </TableRow>
+    </>
   )
+  const props = {
+    'data-state': isSelected ? 'selected' : undefined,
+    className,
+    ...rowProps,
+    children,
+  }
+  return <TableRow {...props} render={render} />
 }
 
 const MemoizedDataTableRow = React.memo(DataTableRowInner, (prev, next) => {
@@ -99,6 +104,7 @@ const MemoizedDataTableRow = React.memo(DataTableRowInner, (prev, next) => {
   // state while the row stays stable, so column definitions and the class
   // resolver are part of the render identity and must be compared too.
   return (
+    prev.render === next.render &&
     prev.row === next.row &&
     prev.className === next.className &&
     prev.isSelected === next.isSelected &&
