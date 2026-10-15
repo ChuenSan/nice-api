@@ -17,6 +17,7 @@ jobs:
       sha: ${{ steps.version.outputs.sha }}
       tag_prefix: ${{ steps.version.outputs.tag_prefix }}
       version: ${{ steps.version.outputs.version }}
+      has_dockerhub: ${{ steps.credentials.outputs.has_dockerhub }}
     permissions:
       contents: read
     steps:
@@ -49,9 +50,30 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Prepared Docker tags for $BRANCH_NAME at $SHORT_SHA"
 
+      - name: Check Docker Hub credentials
+        id: credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "has_dockerhub=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_dockerhub=false" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Docker Hub publishing skipped::Configure both DOCKERHUB_USERNAME and DOCKERHUB_TOKEN to publish to Docker Hub. GHCR publishing uses its own workflow and does not require these secrets."
+          {
+            echo "### Docker Hub publishing skipped"
+            echo 'Repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` must both be configured.'
+            echo "No Docker Hub images were published. Configure both secrets and run this workflow again."
+            echo "For GHCR images, use the Publish Docker image to GHCR (main) workflow instead."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build_single_arch:
     name: Build & push (${{ matrix.arch }}) [native]
     needs: [prepare]
+    if: needs.prepare.outputs.has_dockerhub == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -128,6 +150,7 @@ jobs:
   create_manifests:
     name: Create multi-arch manifests (Docker Hub)
     needs: [prepare, build_single_arch]
+    if: needs.prepare.outputs.has_dockerhub == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
