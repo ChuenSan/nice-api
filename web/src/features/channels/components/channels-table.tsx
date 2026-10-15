@@ -47,7 +47,12 @@ import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
-import { getChannels, searchChannels, getGroups } from '../api'
+import {
+  getChannelDefaultBaseURLs,
+  getChannels,
+  searchChannels,
+  getGroups,
+} from '../api'
 import {
   DEFAULT_PAGE_SIZE,
   CHANNEL_STATUS,
@@ -310,7 +315,17 @@ export function ChannelsTable() {
   const typeCounts = data?.data?.type_counts
 
   // Columns configuration
-  const columns = useChannelsColumns({ enableSelection: batchMode })
+  const { data: defaultBaseURLs } = useQuery({
+    queryKey: channelsQueryKeys.defaultBaseURLs(),
+    // Optional defaults must not prevent configured addresses from working.
+    queryFn: () => getChannelDefaultBaseURLs().catch(() => null),
+    enabled: sensitiveVisible,
+    staleTime: 5 * 60 * 1000,
+  })
+  const columns = useChannelsColumns({
+    enableSelection: batchMode,
+    defaultBaseURLs,
+  })
 
   // React Table instance
   const { table } = useDataTable({
