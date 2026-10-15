@@ -126,10 +126,18 @@ export function ChannelPriorityHandle(props: HandleProps) {
           return
         }
         if (blocked) return
-        if (event.key === ' ' || event.key === 'Enter') {
+        if (event.key === 'Enter') {
           event.preventDefault()
           if (moving) void props.order.commit()
           else props.order.begin(props.id)
+          return
+        }
+        if (event.key === ' ') {
+          // Space only picks up a channel; saving stays on Enter so a second
+          // Space cannot accidentally commit the move.
+          event.preventDefault()
+          if (!moving) props.order.begin(props.id)
+          return
         }
         if (moving && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
           event.preventDefault()
