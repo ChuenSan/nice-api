@@ -62,3 +62,13 @@ func assertChannelRoutePermission(t *testing.T, method string, path string, perm
 	}
 	t.Fatalf("route %s %s not found", method, path)
 }
+
+func TestChannelPriorityReorderRequiresWritePermission(t *testing.T) {
+	assertChannelRoutePermission(t, http.MethodPost, "/priority/reorder", authz.ChannelWrite, controller.ReorderChannelPriority)
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	registerChannelRoutes(engine.Group("/api"))
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/channel/priority/reorder", nil))
+	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+}

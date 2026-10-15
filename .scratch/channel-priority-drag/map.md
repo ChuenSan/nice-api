@@ -8,7 +8,7 @@ Base commit: 51205165eda31ca49cc1962f8344d6a54ba57f48
 
 本次 implement-spec 请求授权实施。规格 Out of Scope 的“本轮实现”描述原规格编写轮次，不限制本次实施。
 本地 tracker 已配置；原规格无实施工单，本次按规格拆分。
-原工作区未提交 GLOSSARY.md、.pi/ 及规格保持原样。实施在隔离检出中进行，最终将集成分支带回原仓库。临时目录曾被环境重启清理，现已恢复到持久隔离目录 /home/user/0github/nice-api-channel-priority。
+原工作区未提交 GLOSSARY.md、.pi/ 及规格保持原样。实施在隔离检出中进行，最终将集成分支带回原仓库。临时目录曾被环境重启清理，现已恢复到持久隔离目录 /home/user/0github/nice-api-channel-priority-recovered。后续环境中断导致部分新 Git 对象为空，已从有效集成分支与源码备份恢复；Git 完整性检查通过。新提交启用 core.fsync=all（仅命令参数）并同步落盘。
 
 ## Decisions-so-far
 

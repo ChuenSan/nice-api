@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -213,41 +212,35 @@ func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
 	return false
 }
 
-func (channel *Channel) AddAbilities(tx *gorm.DB) error {
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
+// AddAbilities uses the persisted channel under the same lock as priority
+// writers. A background caller's old copy must never restore an old priority.
+func (channel *Channel) AddAbilities(db *gorm.DB) error {
+	return withChannelOrder(db, true, func(tx *gorm.DB) error {
+		var current Channel
+		if err := lockForUpdate(tx).First(&current, channel.Id).Error; err != nil {
+			return err
+		}
+		return current.addAbilities(tx)
+	})
+}
+
+func (channel *Channel) addAbilities(tx *gorm.DB) error {
 	abilitySet := make(map[string]struct{})
-	abilities := make([]Ability, 0, len(models_))
-	for _, model := range models_ {
-		for _, group := range groups_ {
+	abilities := make([]Ability, 0)
+	for _, model := range channel.GetModels() {
+		for group := range strings.SplitSeq(channel.Group, ",") {
 			key := group + "|" + model
 			if _, exists := abilitySet[key]; exists {
 				continue
 			}
 			abilitySet[key] = struct{}{}
-			ability := Ability{
-				Group:     group,
-				Model:     model,
-				ChannelId: channel.Id,
-				Enabled:   channel.Status == common.ChannelStatusEnabled,
-				Priority:  channel.Priority,
-				Weight:    uint(channel.GetWeight()),
-				Tag:       channel.Tag,
-			}
-			abilities = append(abilities, ability)
+			abilities = append(abilities, Ability{Group: group, Model: model, ChannelId: channel.Id,
+				Enabled: channel.Status == common.ChannelStatusEnabled, Priority: channel.Priority,
+				Weight: uint(channel.GetWeight()), Tag: channel.Tag})
 		}
 	}
-	if len(abilities) == 0 {
-		return nil
-	}
-	// choose DB or provided tx
-	useDB := DB
-	if tx != nil {
-		useDB = tx
-	}
 	for _, chunk := range lo.Chunk(abilities, 50) {
-		err := useDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
-		if err != nil {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error; err != nil {
 			return err
 		}
 	}
@@ -255,101 +248,42 @@ func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 }
 
 func (channel *Channel) DeleteAbilities() error {
-	return DB.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		return tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
+	})
 }
 
-// UpdateAbilities updates abilities of this channel.
-// Make sure the channel is completed before calling this function.
-func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
-	isNewTx := false
-	// 如果没有传入事务，创建新的事务
-	if tx == nil {
-		tx = DB.Begin()
-		if tx.Error != nil {
-			return tx.Error
+// UpdateAbilities rebuilds from current persisted routing fields, even when the
+// receiver was read before another process committed a priority change.
+func (channel *Channel) UpdateAbilities(db *gorm.DB) error {
+	return withChannelOrder(db, true, func(tx *gorm.DB) error {
+		var current Channel
+		if err := lockForUpdate(tx).First(&current, channel.Id).Error; err != nil {
+			return err
 		}
-		isNewTx = true
-		defer func() {
-			if r := recover(); r != nil {
-				tx.Rollback()
-			}
-		}()
-	}
-
-	// First delete all abilities of this channel
-	err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
-	if err != nil {
-		if isNewTx {
-			tx.Rollback()
+		if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
+			return err
 		}
-		return err
-	}
-
-	// Then add new abilities
-	models_ := channel.GetModels()
-	groups_ := strings.Split(channel.Group, ",")
-	abilitySet := make(map[string]struct{})
-	abilities := make([]Ability, 0, len(models_))
-	for _, model := range models_ {
-		for _, group := range groups_ {
-			key := group + "|" + model
-			if _, exists := abilitySet[key]; exists {
-				continue
-			}
-			abilitySet[key] = struct{}{}
-			ability := Ability{
-				Group:     group,
-				Model:     model,
-				ChannelId: channel.Id,
-				Enabled:   channel.Status == common.ChannelStatusEnabled,
-				Priority:  channel.Priority,
-				Weight:    uint(channel.GetWeight()),
-				Tag:       channel.Tag,
-			}
-			abilities = append(abilities, ability)
-		}
-	}
-
-	if len(abilities) > 0 {
-		for _, chunk := range lo.Chunk(abilities, 50) {
-			err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
-			if err != nil {
-				if isNewTx {
-					tx.Rollback()
-				}
-				return err
-			}
-		}
-	}
-
-	// 如果是新创建的事务，需要提交
-	if isNewTx {
-		return tx.Commit().Error
-	}
-
-	return nil
+		return current.addAbilities(tx)
+	})
 }
 
 func UpdateAbilityStatus(channelId int, status bool) error {
-	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		return tx.Model(&Ability{}).Where("channel_id = ?", channelId).Update("enabled", status).Error
+	})
 }
 
 func UpdateAbilityStatusByTag(tag string, status bool) error {
-	return DB.Model(&Ability{}).Where("tag = ?", tag).Select("enabled").Update("enabled", status).Error
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		return tx.Model(&Ability{}).Where("tag = ?", tag).Update("enabled", status).Error
+	})
 }
 
+// UpdateAbilityByTag retains the legacy entry point while sharing the atomic
+// channel/tag mutation path, so ability priorities cannot diverge from channels.
 func UpdateAbilityByTag(tag string, newTag *string, priority *int64, weight *uint) error {
-	ability := Ability{}
-	if newTag != nil {
-		ability.Tag = newTag
-	}
-	if priority != nil {
-		ability.Priority = priority
-	}
-	if weight != nil {
-		ability.Weight = *weight
-	}
-	return DB.Model(&Ability{}).Where("tag = ?", tag).Updates(ability).Error
+	return EditChannelByTag(tag, newTag, nil, nil, nil, priority, weight, nil, nil)
 }
 
 var fixLock = sync.Mutex{}
@@ -361,51 +295,28 @@ func FixAbility() (int, int, error) {
 	}
 	defer fixLock.Unlock()
 
-	// truncate abilities table
-	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
-		err := DB.Exec("DELETE FROM abilities").Error
-		if err != nil {
-			common.SysLog(fmt.Sprintf("Delete abilities failed: %s", err.Error()))
-			return 0, 0, err
+	successCount := 0
+	err := withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		var channels []*Channel
+		if err := lockForUpdate(tx).Order("id").Find(&channels).Error; err != nil {
+			return err
 		}
-	} else {
-		err := DB.Exec("TRUNCATE TABLE abilities").Error
-		if err != nil {
-			common.SysLog(fmt.Sprintf("Truncate abilities failed: %s", err.Error()))
-			return 0, 0, err
+		// DELETE is transactional on all supported databases; MySQL TRUNCATE
+		// implicitly commits and would expose a temporarily empty routing table.
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&Ability{}).Error; err != nil {
+			return err
 		}
-	}
-	var channels []*Channel
-	// Find all channels
-	err := DB.Model(&Channel{}).Find(&channels).Error
+		for _, channel := range channels {
+			if err := channel.addAbilities(tx); err != nil {
+				return err
+			}
+			successCount++
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(channels) == 0 {
-		return 0, 0, nil
-	}
-	successCount := 0
-	failCount := 0
-	for _, chunk := range lo.Chunk(channels, 50) {
-		ids := lo.Map(chunk, func(c *Channel, _ int) int { return c.Id })
-		// Delete all abilities of this channel
-		err = DB.Where("channel_id IN ?", ids).Delete(&Ability{}).Error
-		if err != nil {
-			common.SysLog(fmt.Sprintf("Delete abilities failed: %s", err.Error()))
-			failCount += len(chunk)
-			continue
-		}
-		// Then add new abilities
-		for _, channel := range chunk {
-			err = channel.AddAbilities(nil)
-			if err != nil {
-				common.SysLog(fmt.Sprintf("Add abilities for channel %d failed: %s", channel.Id, err.Error()))
-				failCount++
-			} else {
-				successCount++
-			}
-		}
-	}
 	InitChannelCache()
-	return successCount, failCount, nil
+	return successCount, 0, nil
 }
