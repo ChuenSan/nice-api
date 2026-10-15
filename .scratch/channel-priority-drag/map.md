@@ -14,6 +14,9 @@ Base commit: 51205165eda31ca49cc1962f8344d6a54ba57f48
 
 测试入口采用规格 Testing Decisions：真实控制器/API、数据库与选路；真实表格及 API 边界；浏览器指针验证。
 
+- `73cb87b906` 合入 `9231b44ef`：稳定列表及原子排序快照。
+- 首个已执行矩阵：`GOMAXPROCS=2 TEST_MYSQL_DSN='root@tcp(127.0.0.1:13379)/' TEST_POSTGRES_DSN='postgresql://postgres@127.0.0.1:15439/postgres?sslmode=disable' go test -p 1 ./controller -run '^TestChannelPriorityList$' -count=1 -v`；SQLite 3.50.4、MySQL 8.0.32、PostgreSQL 15.19 全通过（2026-10-15）。此结果仅覆盖列表快照切片，尚未验证完整重排。初始化 helper 在建表前尝试读取 options 产生既有日志，功能测试通过。
+
 ## Fog
 
 需要真实三引擎验收，未验证不能关闭最终工单。接口契约已选定：完整列表提供 data.order_snapshot；重排 POST 接收期望快照与页内 moved_id/target_id；前后端可按 API 边界并行实施。
