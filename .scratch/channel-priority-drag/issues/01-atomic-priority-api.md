@@ -1,7 +1,7 @@
 # 01: 原子全局优先级保存与并发保护
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: None
 
 ## What to build

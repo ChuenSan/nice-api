@@ -1,8 +1,8 @@
 # 02: 渠道表格页内拖动与保存反馈
 
 Type: task
-Status: ready-for-agent
-Blocked by: 01
+Status: claimed
+Blocked by: None
 
 ## What to build
 
@@ -16,6 +16,10 @@ Blocked by: 01
 - 普通失败恢复，409 与不确定结果读取最新服务器状态且不自动重放写入。
 - 明示全局编号拆开同级分流；全部七种语言翻译、操作通知及无障碍名称完整。
 - TDD：真实渠道表格、API 边界与键盘交互覆盖成功、禁用、失败、409、取消/空操作和保存期禁拖。
+
+## Coordination
+
+接口契约已选定，前后端可按 API 边界并行实施，由 03 集成验收。完整列表返回 data.order_snapshot；POST /api/channel/priority/reorder 携带 expected_snapshot、page、page_size、moved_id、target_id，冲突为 HTTP 409。
 
 ## Verification seam
 
