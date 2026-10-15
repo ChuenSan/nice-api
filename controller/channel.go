@@ -303,6 +303,21 @@ func GetAllChannels(c *gin.Context) {
 
 // ReorderChannelPriority accepts a page move, never client-assigned priorities.
 func ReorderChannelPriority(c *gin.Context) {
+	// A global reorder requires access to the entire channel set. Read and
+	// write grants are independent, including for scoped personal access tokens.
+	for _, permission := range []authz.Permission{authz.ChannelRead, authz.ChannelWrite} {
+		if !authz.Can(c.GetInt("id"), c.GetInt("role"), permission) {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgAuthInsufficientPrivilege)})
+			return
+		}
+		if c.GetBool("use_access_token") && !c.GetBool("access_token_legacy") {
+			scope := service.AccessTokenScopeOf(permission)
+			if !service.AccessTokenScopeGranted(c.GetStringSlice("access_token_scopes"), scope) {
+				c.JSON(http.StatusForbidden, gin.H{"success": false, "code": "ACCESS_TOKEN_SCOPE_DENIED", "message": common.TranslateMessage(c, i18n.MsgAuthAccessTokenScope, map[string]any{"Scope": scope})})
+				return
+			}
+		}
+	}
 	var move model.ChannelPriorityMove
 	if err := c.ShouldBindJSON(&move); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "invalid_priority_move", "message": "invalid_priority_move"})
