@@ -20,7 +20,7 @@ import { Drag01Icon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import type { CellContext, Row } from '@tanstack/react-table'
 import { Reorder, useDragControls } from 'motion/react'
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useRef, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -41,9 +41,10 @@ type HandleProps = {
   disabledReason?: string
   instructionsId: string
 }
-const DragContext = createContext<ReturnType<typeof useDragControls> | null>(
-  null
-)
+const DragContext = createContext<{
+  controls: ReturnType<typeof useDragControls>
+  dragging: { current: boolean }
+} | null>(null)
 const ChannelPriorityContext = createContext<Omit<HandleProps, 'id'> | null>(
   null
 )
@@ -66,7 +67,7 @@ export function ChannelPriorityCell(props: CellContext<Channel, unknown>) {
 
 export function ChannelPriorityHandle(props: HandleProps) {
   const { t } = useTranslation()
-  const controls = useContext(DragContext)
+  const drag = useContext(DragContext)
   const moving = props.order.activeId === props.id && !props.order.saving
   const blocked = Boolean(
     props.disabledReason || (props.order.activeId !== undefined && !moving)
@@ -93,24 +94,34 @@ export function ChannelPriorityHandle(props: HandleProps) {
         )
       }
       onPointerDown={(event) => {
-        if (blocked || event.button !== 0 || !controls) return
+        if (blocked || event.button !== 0 || !drag) return
         event.currentTarget.focus()
-        if (props.order.begin(props.id)) controls.start(event)
+        if (props.order.begin(props.id)) {
+          drag.dragging.current = false
+          event.currentTarget.setPointerCapture?.(event.pointerId)
+          drag.controls.start(event)
+        }
+      }}
+      onPointerUp={() => {
+        if (!drag?.dragging.current) {
+          drag?.controls.cancel()
+          props.order.cancel()
+        }
       }}
       onPointerCancel={() => {
-        controls?.cancel()
+        drag?.controls.cancel()
         props.order.cancel()
       }}
       onBlur={() => {
         if (moving) {
-          controls?.cancel()
+          drag?.controls.cancel()
           props.order.cancel()
         }
       }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault()
-          controls?.cancel()
+          drag?.controls.cancel()
           props.order.cancel()
           return
         }
@@ -142,8 +153,9 @@ export function ChannelPriorityRow(props: {
   className?: string
 }) {
   const controls = useDragControls()
+  const dragging = useRef(false)
   return (
-    <DragContext.Provider value={controls}>
+    <DragContext.Provider value={{ controls, dragging }}>
       <DataTableRow
         row={props.row}
         className={props.className}
@@ -163,7 +175,11 @@ export function ChannelPriorityRow(props: {
             dragControls={controls}
             dragMomentum={false}
             layout='position'
+            onDragStart={() => {
+              dragging.current = true
+            }}
             onDragEnd={(event, info) => {
+              dragging.current = false
               const target = event.target as HTMLElement | null
               const bounds = target?.closest('tbody')?.getBoundingClientRect()
               const x = info.point.x - window.scrollX

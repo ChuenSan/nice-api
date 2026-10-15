@@ -200,6 +200,7 @@ function PriorityCell({ channel }: { channel: Channel }) {
 function TagPriorityCell({ channel }: { channel: TagRow }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const { beginPriorityEdit, priorityReorderActive } = useChannels()
   const priority = channel.priority
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [pendingValue, setPendingValue] = useState<number | null>(null)
@@ -210,6 +211,7 @@ function TagPriorityCell({ channel }: { channel: TagRow }) {
     <>
       <NumericSpinnerInput
         value={priority ?? 0}
+        disabled={priorityReorderActive}
         onChange={(value) => {
           setPendingValue(value)
           setConfirmOpen(true)
@@ -227,7 +229,20 @@ function TagPriorityCell({ channel }: { channel: TagRow }) {
         confirmText={t('Update')}
         handleConfirm={() => {
           if (pendingValue !== null) {
-            handleUpdateTagField(tag, 'priority', pendingValue, queryClient)
+            const release = beginPriorityEdit()
+            if (!release) return
+            void handleUpdateTagField(
+              tag,
+              'priority',
+              pendingValue,
+              queryClient
+            )
+              .then(() =>
+                queryClient.invalidateQueries({
+                  queryKey: channelsQueryKeys.lists(),
+                })
+              )
+              .finally(release)
           }
           setConfirmOpen(false)
         }}
