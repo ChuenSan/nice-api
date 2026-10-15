@@ -1,7 +1,7 @@
 # 03: 三数据库验收与集成审查
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 01, 02
 
 ## What to build

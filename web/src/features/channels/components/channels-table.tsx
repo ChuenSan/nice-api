@@ -400,6 +400,7 @@ export function ChannelsTable() {
     const result = [...baseColumns]
     result.splice(batchMode ? 1 : 0, 0, {
       id: 'priority_move',
+      meta: { mobileHidden: true },
       header: () => <span className='sr-only'>{t('Reorder channels')}</span>,
       cell: ChannelPriorityCell,
       enableSorting: false,
@@ -539,7 +540,7 @@ export function ChannelsTable() {
           role='status'
           aria-live='polite'
           aria-atomic='true'
-          className='text-sm'
+          className='min-h-5 text-sm'
         >
           {priorityOrder.message}
         </p>
@@ -567,11 +568,7 @@ export function ChannelsTable() {
                 row={row}
                 helpers={helpers}
                 order={priorityOrder}
-                className={
-                  isDisabledChannelRow(row.original)
-                    ? DISABLED_ROW_DESKTOP
-                    : undefined
-                }
+                className={helpers.className}
               />
             )}
             toolbarProps={{

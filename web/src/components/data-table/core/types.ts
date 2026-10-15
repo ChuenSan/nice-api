@@ -33,6 +33,12 @@ export type DataTablePinnedColumn = {
 }
 
 export type DataTableRenderRowHelpers = {
+  /**
+   * Resolved row className (composed from `tableBodyRowClassName` and
+   * `getRowClassName`). Custom row renderers must forward it to keep
+   * row-state styling (selection, disabled rows, mobile variants) intact.
+   */
+  className: string
   getCellClassName: (columnId: string, className?: string) => string | undefined
 }
 
