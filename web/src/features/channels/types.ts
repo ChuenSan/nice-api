@@ -158,6 +158,7 @@ export interface GetChannelsResponse {
     total: number
     page: number
     page_size: number
+    order_snapshot?: string
     type_counts?: Record<string, number>
   }
 }
@@ -386,4 +387,19 @@ export interface AddChannelRequest {
   multi_key_mode?: 'random' | 'polling'
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
+}
+
+export interface ReorderChannelPriorityParams {
+  expected_snapshot: string
+  page: number
+  page_size: number
+  moved_id: number
+  target_id: number
+}
+
+export interface ReorderChannelPriorityResponse {
+  success: boolean
+  message?: string
+  code?: string
+  data?: { order_snapshot: string }
 }
