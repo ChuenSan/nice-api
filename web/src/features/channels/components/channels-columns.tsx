@@ -27,7 +27,7 @@ import {
   Shuffle,
   SlidersHorizontal,
 } from 'lucide-react'
-import { useState, useMemo, useContext, useEffect } from 'react'
+import { useState, useMemo, useRef, useContext, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -248,10 +248,22 @@ function ChannelFieldCell({
   min: number
 }) {
   const queryClient = useQueryClient()
+  const { beginPriorityEdit, priorityReorderActive } = useChannels()
+  const releasePending = useRef<(() => void) | undefined>(undefined)
   const fieldUpdateScheduler = useMemo(
     () =>
       createChannelFieldUpdateScheduler((nextValue) => {
+        const release = releasePending.current
+        releasePending.current = undefined
         void handleUpdateChannelField(channelId, field, nextValue, queryClient)
+          .then(async () => {
+            if (field === 'priority') {
+              await queryClient.invalidateQueries({
+                queryKey: channelsQueryKeys.lists(),
+              })
+            }
+          })
+          .finally(() => release?.())
       }),
     [channelId, field, queryClient]
   )
@@ -261,7 +273,14 @@ function ChannelFieldCell({
   return (
     <NumericSpinnerInput
       value={value ?? 0}
-      onChange={fieldUpdateScheduler.schedule}
+      disabled={field === 'priority' && priorityReorderActive}
+      onChange={(next) => {
+        if (field === 'priority' && !releasePending.current) {
+          releasePending.current = beginPriorityEdit()
+          if (!releasePending.current) return
+        }
+        fieldUpdateScheduler.schedule(next)
+      }}
       onCommit={fieldUpdateScheduler.flush}
       min={min}
     />

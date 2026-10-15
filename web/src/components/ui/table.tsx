@@ -84,17 +84,22 @@ function TableFooter({ className, ...props }: React.ComponentProps<'tfoot'>) {
   )
 }
 
-function TableRow({ className, ...props }: React.ComponentProps<'tr'>) {
-  return (
-    <tr
-      data-slot='table-row'
-      className={cn(
-        'group data-[state=selected]:bg-muted border-b transition-colors hover:[background-color:color-mix(in_oklch,var(--muted)_50%,var(--background))] has-aria-expanded:[background-color:color-mix(in_oklch,var(--muted)_50%,var(--background))]',
-        className
-      )}
-      {...props}
-    />
-  )
+function TableRow({
+  className,
+  render,
+  ...props
+}: React.ComponentProps<'tr'> & {
+  render?: (props: React.ComponentProps<'tr'>) => React.ReactNode
+}) {
+  const rowProps = {
+    'data-slot': 'table-row',
+    className: cn(
+      'group data-[state=selected]:bg-muted border-b transition-colors hover:[background-color:color-mix(in_oklch,var(--muted)_50%,var(--background))] has-aria-expanded:[background-color:color-mix(in_oklch,var(--muted)_50%,var(--background))]',
+      className
+    ),
+    ...props,
+  }
+  return render ? render(rowProps) : <tr {...rowProps} />
 }
 
 function TableHead({ className, ...props }: React.ComponentProps<'th'>) {
