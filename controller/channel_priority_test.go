@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,6 +78,8 @@ func priorityRequest(t *testing.T, handler gin.HandlerFunc, method, path string,
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest(method, path, bytes.NewReader(encoded))
+	context.Set("id", 1)
+	context.Set("role", common.RoleRootUser)
 	context.Request.Header.Set("Content-Type", "application/json")
 	handler(context)
 	var response priorityResponse
@@ -202,13 +206,24 @@ func TestChannelPriorityStaleAbilityRebuild(t *testing.T) {
 			}
 			database := priorityDatabase(t, dialect.kind, dsn)
 			firstPriority, secondPriority := int64(90), int64(10)
-			first := model.Channel{Id: 1, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &firstPriority}
+			first := model.Channel{Id: 1, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &firstPriority, Setting: common.GetPointer("invalid"), OtherSettings: "invalid"}
 			second := model.Channel{Id: 2, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &secondPriority}
 			require.NoError(t, first.Insert())
 			require.NoError(t, second.Insert())
 			_, baseline := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
 			status, _ := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", model.ChannelPriorityMove{ExpectedSnapshot: baseline.Data.Snapshot, Page: 1, PageSize: 10, MovedID: 2, TargetID: 1})
 			require.Equal(t, http.StatusOK, status)
+			// Recovery from malformed settings on a stale receiver must not restore
+			// its old priority or overwrite an unrelated edit made after it loaded.
+			require.NoError(t, (&model.Channel{Id: 1, Name: "updated"}).Update())
+			first.GetSetting()
+			first.GetOtherSettings()
+			repaired, err := model.GetChannelById(1, true)
+			require.NoError(t, err)
+			assert.Nil(t, repaired.Setting)
+			assert.Equal(t, "{}", repaired.OtherSettings)
+			assert.Equal(t, "updated", repaired.Name)
+			assert.EqualValues(t, 1, repaired.GetPriority())
 			// Background/upstream callers may retain a channel loaded before reorder.
 			require.NoError(t, first.UpdateAbilities(nil))
 			selected, err := model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
@@ -599,6 +614,65 @@ func TestChannelPriorityMultiProcess(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func TestChannelPriorityPermissions(t *testing.T) {
+	user, legacy := setupAccessTokenAudit(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+	for _, id := range []int{1, 2} {
+		priority := int64(10)
+		channel := model.Channel{Id: id, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &priority}
+		require.NoError(t, channel.Insert())
+	}
+	_, browser := createAccessTokenTestSession(t, user.Id, "priority-permissions")
+	readOnly, _ := createScopedAccessToken(t, user.Id, 0, "channel:read")
+	writeOnly, _ := createScopedAccessToken(t, user.Id, 0, "channel:write")
+	both, _ := createScopedAccessToken(t, user.Id, 0, "channel:read", "channel:write")
+	middleware.DeclareAccessTokenPermissionRoute(http.MethodPost, "/api/channel/priority/reorder", authz.ChannelWrite)
+	router := gin.New()
+	router.Use(middleware.RequestId(), middleware.AccessTokenAudit())
+	router.POST("/api/channel/priority/reorder", middleware.AdminAuth(), middleware.RequirePermission(authz.ChannelWrite), ReorderChannelPriority)
+	for _, test := range []struct {
+		name, credential string
+		read, write      bool
+		status           int
+	}{
+		{"anonymous", "", true, true, http.StatusUnauthorized},
+		{"browser write only", browser, false, true, http.StatusForbidden},
+		{"browser read only", browser, true, false, http.StatusForbidden},
+		{"PAT write scope only", writeOnly, true, true, http.StatusForbidden},
+		{"PAT read scope only", readOnly, true, true, http.StatusForbidden},
+		{"PAT user lacks read", both, false, true, http.StatusForbidden},
+		{"PAT user lacks write", both, true, false, http.StatusForbidden},
+		{"legacy user lacks read", legacy, false, true, http.StatusForbidden},
+		{"browser both permissions", browser, true, true, http.StatusOK},
+		{"PAT both scopes and permissions", both, true, true, http.StatusOK},
+		{"legacy both permissions", legacy, true, true, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(t, authz.SetUserPermissions(user.Id, authz.PermissionsMap{authz.ResourceChannel: {authz.ActionRead: test.read, authz.ActionWrite: test.write}}))
+			_, before := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+			var abilities []model.Ability
+			require.NoError(t, model.DB.Order("channel_id").Find(&abilities).Error)
+			move := model.ChannelPriorityMove{ExpectedSnapshot: before.Data.Snapshot, Page: 1, PageSize: 10, MovedID: before.Data.Items[1].Id, TargetID: before.Data.Items[0].Id}
+			body, err := common.Marshal(move)
+			require.NoError(t, err)
+			response := accessTokenRequest(router, http.MethodPost, "/api/channel/priority/reorder", test.credential, "", string(body))
+			require.Equal(t, test.status, response.Code, response.Body.String())
+			_, after := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+			if test.status != http.StatusOK {
+				assert.Equal(t, before, after, "denied request must preserve channel state")
+				var actual []model.Ability
+				require.NoError(t, model.DB.Order("channel_id").Find(&actual).Error)
+				assert.Equal(t, abilities, actual, "denied request must preserve routing abilities")
+				return
+			}
+			assert.Equal(t, []int{move.MovedID, move.TargetID}, []int{after.Data.Items[0].Id, after.Data.Items[1].Id})
 		})
 	}
 }
