@@ -453,54 +453,40 @@ func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
 	}
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	for _, chunk := range lo.Chunk(channels, 50) {
-		if err := tx.Create(&chunk).Error; err != nil {
-			tx.Rollback()
-			return err
-		}
-		for _, channel_ := range chunk {
-			if err := channel_.AddAbilities(tx); err != nil {
-				tx.Rollback()
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		for _, chunk := range lo.Chunk(channels, 50) {
+			if err := tx.Create(&chunk).Error; err != nil {
 				return err
 			}
+			for _, channel := range chunk {
+				if err := channel.addAbilities(tx); err != nil {
+					return err
+				}
+			}
 		}
-	}
-	return tx.Commit().Error
+		return nil
+	})
 }
 
 func BatchDeleteChannels(ids []int) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	// 使用事务 分批删除channel表和abilities表
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return 0, tx.Error
-	}
 	var deletedCount int64
-	for _, chunk := range lo.Chunk(ids, 200) {
-		result := tx.Where("id in (?)", chunk).Delete(&Channel{})
-		if result.Error != nil {
-			tx.Rollback()
-			return 0, result.Error
+	err := withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		for _, chunk := range lo.Chunk(ids, 200) {
+			result := tx.Where("id IN ?", chunk).Delete(&Channel{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deletedCount += result.RowsAffected
+			if err := tx.Where("channel_id IN ?", chunk).Delete(&Ability{}).Error; err != nil {
+				return err
+			}
 		}
-		deletedCount += result.RowsAffected
-		if err := tx.Where("channel_id in (?)", chunk).Delete(&Ability{}).Error; err != nil {
-			tx.Rollback()
-			return 0, err
-		}
-	}
-	if err := tx.Commit().Error; err != nil {
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
 	return deletedCount, nil
@@ -546,13 +532,12 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
-	var err error
-	err = DB.Create(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.AddAbilities(nil)
-	return err
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		if err := tx.Create(channel).Error; err != nil {
+			return err
+		}
+		return channel.addAbilities(tx)
+	})
 }
 
 func (channel *Channel) Update() error {
@@ -594,14 +579,15 @@ func (channel *Channel) Update() error {
 			}
 		}
 	}
-	var err error
-	err = DB.Model(channel).Updates(channel).Error
-	if err != nil {
-		return err
-	}
-	DB.Model(channel).First(channel, "id = ?", channel.Id)
-	err = channel.UpdateAbilities(nil)
-	return err
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		if err := tx.Model(channel).Updates(channel).Error; err != nil {
+			return err
+		}
+		if err := tx.First(channel, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		return channel.UpdateAbilities(tx)
+	})
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
@@ -625,12 +611,7 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	var err error
-	err = DB.Delete(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.DeleteAbilities()
+	_, err := BatchDeleteChannels([]int{channel.Id})
 	return err
 }
 
@@ -849,22 +830,17 @@ func DisableChannelByTag(tag string) error {
 
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
 	updateData := Channel{}
-	shouldReCreateAbilities := false
-	updatedTag := tag
 	// 如果 newTag 不为空且不等于 tag，则更新 tag
 	if newTag != nil && *newTag != tag {
 		updateData.Tag = newTag
-		updatedTag = *newTag
 	}
 	if modelMapping != nil {
 		updateData.ModelMapping = modelMapping
 	}
 	if models != nil && *models != "" {
-		shouldReCreateAbilities = true
 		updateData.Models = *models
 	}
 	if group != nil && *group != "" {
-		shouldReCreateAbilities = true
 		updateData.Group = *group
 	}
 	if priority != nil {
@@ -880,27 +856,21 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 		updateData.HeaderOverride = headerOverride
 	}
 
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Updates(updateData).Error
-	if err != nil {
-		return err
-	}
-	if shouldReCreateAbilities {
-		channels, err := GetChannelsByTag(updatedTag, false, false)
-		if err == nil {
-			for _, channel := range channels {
-				err = channel.UpdateAbilities(nil)
-				if err != nil {
-					common.SysLog(fmt.Sprintf("failed to update abilities: channel_id=%d, tag=%s, error=%v", channel.Id, channel.GetTag(), err))
-				}
-			}
-		}
-	} else {
-		err := UpdateAbilityByTag(tag, newTag, priority, weight)
-		if err != nil {
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		var channels []Channel
+		if err := lockForUpdate(tx).Where("tag = ?", tag).Order("id").Find(&channels).Error; err != nil {
 			return err
 		}
-	}
-	return nil
+		for _, channel := range channels {
+			if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updateData).Error; err != nil {
+				return err
+			}
+			if err := channel.UpdateAbilities(tx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func UpdateChannelUsedQuota(id int, quota int) {
@@ -919,13 +889,34 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
-	result := DB.Where("status = ?", status).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	return deleteChannelsByStatuses([]int64{status})
 }
 
 func DeleteDisabledChannel() (int64, error) {
-	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	return deleteChannelsByStatuses([]int64{common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled})
+}
+
+func deleteChannelsByStatuses(statuses []int64) (int64, error) {
+	var count int64
+	err := withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		var ids []int
+		if err := tx.Model(&Channel{}).Where("status IN ?", statuses).Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		if err := tx.Where("channel_id IN ?", ids).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		result := tx.Where("id IN ?", ids).Delete(&Channel{})
+		count = result.RowsAffected
+		return result.Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {
@@ -1109,36 +1100,21 @@ func GetChannelsByIds(ids []int) ([]*Channel, error) {
 }
 
 func BatchSetChannelTag(ids []int, tag *string) error {
-	// 开启事务
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-
-	// 更新标签
-	err := tx.Model(&Channel{}).Where("id in (?)", ids).Update("tag", tag).Error
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	// update ability status
-	channels, err := GetChannelsByIds(ids)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	for _, channel := range channels {
-		err = channel.UpdateAbilities(tx)
-		if err != nil {
-			tx.Rollback()
+	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
+		if err := tx.Model(&Channel{}).Where("id IN ?", ids).Update("tag", tag).Error; err != nil {
 			return err
 		}
-	}
-
-	// 提交事务
-	return tx.Commit().Error
+		var channels []Channel
+		if err := tx.Where("id IN ?", ids).Find(&channels).Error; err != nil {
+			return err
+		}
+		for _, channel := range channels {
+			if err := channel.UpdateAbilities(tx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // CountAllChannels returns total channels in DB

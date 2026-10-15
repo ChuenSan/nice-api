@@ -184,3 +184,41 @@ func TestChannelPriorityReorder(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelPriorityStaleAbilityRebuild(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := os.Getenv(dialect.env)
+			if dialect.env != "" && dsn == "" {
+				t.Skip("disposable database DSN not configured")
+			}
+			database := priorityDatabase(t, dialect.kind, dsn)
+			firstPriority, secondPriority := int64(90), int64(10)
+			first := model.Channel{Id: 1, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &firstPriority}
+			second := model.Channel{Id: 2, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &secondPriority}
+			require.NoError(t, first.Insert())
+			require.NoError(t, second.Insert())
+			_, baseline := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+			status, _ := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", model.ChannelPriorityMove{ExpectedSnapshot: baseline.Data.Snapshot, Page: 1, PageSize: 10, MovedID: 2, TargetID: 1})
+			require.Equal(t, http.StatusOK, status)
+			// Background/upstream callers may retain a channel loaded before reorder.
+			require.NoError(t, first.UpdateAbilities(nil))
+			selected, err := model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
+			require.NoError(t, err)
+			require.NotNil(t, selected)
+			assert.Equal(t, 2, selected.Id)
+			var ability model.Ability
+			require.NoError(t, database.Where("channel_id = ?", 1).First(&ability).Error)
+			require.NotNil(t, ability.Priority)
+			assert.EqualValues(t, 1, *ability.Priority)
+			count, failures, err := model.FixAbility()
+			require.NoError(t, err)
+			assert.Equal(t, 2, count)
+			assert.Zero(t, failures)
+			selected, err = model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
+			require.NoError(t, err)
+			require.NotNil(t, selected)
+			assert.Equal(t, 2, selected.Id)
+		})
+	}
+}
