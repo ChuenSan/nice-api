@@ -1,12 +1,19 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -308,6 +315,7 @@ func TestChannelPriorityValidationAndWriterConflicts(t *testing.T) {
 					p, next := int64(80), "renamed"
 					return model.EditChannelByTag("batch", &next, nil, nil, nil, &p, nil, nil, nil)
 				}},
+				{"ability tag priority", func() error { p := int64(80); return model.UpdateAbilityByTag("batch", nil, &p, nil) }},
 				{"insert", func() error { c := newChannel(4); return c.Insert() }},
 				{"batch insert", func() error { return model.BatchInsertChannels([]model.Channel{newChannel(4), newChannel(5)}) }},
 				{"delete", func() error { return (&model.Channel{Id: 1}).Delete() }},
@@ -418,6 +426,179 @@ func TestChannelPriorityRollback(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, selected)
 			assert.Equal(t, 1, selected.Id)
+		})
+	}
+}
+
+// The helper runs an independent gateway process against the same disposable DB.
+// Its warmed routing cache cannot be refreshed by the parent's process globals.
+type priorityProcessCommand struct {
+	Operation string                    `json:"operation"`
+	Move      model.ChannelPriorityMove `json:"move"`
+}
+
+type priorityProcessResult struct {
+	Event    string           `json:"event"`
+	Status   int              `json:"status"`
+	Response priorityResponse `json:"response"`
+	Selected int              `json:"selected"`
+	Error    string           `json:"error"`
+}
+
+func TestChannelPriorityProcess(t *testing.T) {
+	if os.Getenv("CHANNEL_PRIORITY_PROCESS") != "1" {
+		t.Skip("subprocess helper")
+	}
+	common.IsMasterNode, common.MemoryCacheEnabled, common.RedisEnabled = false, true, false
+	common.SQLitePath = os.Getenv("CHANNEL_PRIORITY_SQLITE_PATH")
+	require.NoError(t, model.InitDB())
+	model.InitChannelCache()
+	emit := func(result priorityProcessResult) {
+		encoded, err := common.Marshal(result)
+		require.NoError(t, err)
+		fmt.Println("@priority:" + string(encoded))
+	}
+	// Signal the first SQL write attempt so the parent can hold a competing
+	// transaction across the exact point where the child starts its mutation.
+	announce := false
+	beforeWrite := func(tx *gorm.DB) {
+		if announce {
+			announce = false
+			emit(priorityProcessResult{Event: "attempt"})
+		}
+	}
+	require.NoError(t, model.DB.Callback().Create().Before("gorm:create").Register("priority_process_write", beforeWrite))
+	require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register("priority_process_write", beforeWrite))
+	require.NoError(t, model.DB.Callback().Delete().Before("gorm:delete").Register("priority_process_write", beforeWrite))
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var command priorityProcessCommand
+		require.NoError(t, common.Unmarshal(scanner.Bytes(), &command))
+		result := priorityProcessResult{Event: "result"}
+		switch command.Operation {
+		case "select":
+			channel, err := model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
+			if err != nil {
+				result.Error = err.Error()
+			} else if channel != nil {
+				result.Selected = channel.Id
+			}
+		case "move":
+			announce = true
+			result.Status, result.Response = priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", command.Move)
+		case "update":
+			announce = true
+			priority := int64(80)
+			if err := (&model.Channel{Id: 1, Priority: &priority}).Update(); err != nil {
+				result.Error = err.Error()
+			}
+		default:
+			t.Fatalf("unknown operation %q", command.Operation)
+		}
+		emit(result)
+	}
+	require.NoError(t, scanner.Err())
+}
+
+func TestChannelPriorityMultiProcess(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := os.Getenv(dialect.env)
+			if dialect.env != "" && dsn == "" {
+				t.Skip("disposable database DSN not configured")
+			}
+			database := priorityDatabase(t, dialect.kind, dsn)
+			for _, id := range []int{1, 2, 3} {
+				priority := int64(40 - id)
+				channel := model.Channel{Id: id, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &priority}
+				require.NoError(t, channel.Insert())
+			}
+			common.MemoryCacheEnabled = true
+			model.InitChannelCache()
+			processContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			t.Cleanup(cancel)
+			child := exec.CommandContext(processContext, os.Args[0], "-test.run=^TestChannelPriorityProcess$")
+			child.Env = append(os.Environ(), "CHANNEL_PRIORITY_PROCESS=1", "CHANNEL_PRIORITY_SQLITE_PATH="+common.SQLitePath)
+			input, err := child.StdinPipe()
+			require.NoError(t, err)
+			output, err := child.StdoutPipe()
+			require.NoError(t, err)
+			child.Stderr = os.Stderr
+			require.NoError(t, child.Start())
+			t.Cleanup(func() { require.NoError(t, input.Close()); require.NoError(t, child.Wait()) })
+			scanner := bufio.NewScanner(output)
+			send := func(command priorityProcessCommand) {
+				encoded, err := common.Marshal(command)
+				require.NoError(t, err)
+				_, err = fmt.Fprintln(input, string(encoded))
+				require.NoError(t, err)
+			}
+			receive := func() priorityProcessResult {
+				for scanner.Scan() {
+					if data, ok := strings.CutPrefix(scanner.Text(), "@priority:"); ok {
+						var result priorityProcessResult
+						require.NoError(t, common.Unmarshal([]byte(data), &result))
+						return result
+					}
+				}
+				t.Fatalf("child process ended before result: %v", scanner.Err())
+				return priorityProcessResult{}
+			}
+			send(priorityProcessCommand{Operation: "select"})
+			assert.Equal(t, 1, receive().Selected)
+			_, before := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+			move := model.ChannelPriorityMove{ExpectedSnapshot: before.Data.Snapshot, Page: 1, PageSize: 3, MovedID: 3, TargetID: 1}
+			status, saved := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+			require.Equal(t, http.StatusOK, status)
+			send(priorityProcessCommand{Operation: "select"})
+			selected := receive()
+			require.Empty(t, selected.Error)
+			assert.Equal(t, 3, selected.Selected, "another process must invalidate its warmed cache immediately")
+			move.ExpectedSnapshot, move.MovedID, move.TargetID = saved.Data.Snapshot, 2, 3
+			send(priorityProcessCommand{Operation: "move", Move: move})
+			require.Equal(t, "attempt", receive().Event)
+			remote := receive()
+			require.Equal(t, http.StatusOK, remote.Status)
+			channel, err := model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
+			require.NoError(t, err)
+			require.NotNil(t, channel)
+			assert.Equal(t, 2, channel.Id, "parent cache must also observe child commits")
+			for _, operation := range []string{"move", "update"} {
+				t.Run(operation, func(t *testing.T) {
+					_, baseline := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+					move := model.ChannelPriorityMove{ExpectedSnapshot: baseline.Data.Snapshot, Page: 1, PageSize: 3, MovedID: 1, TargetID: 2}
+					baselineRead, release := make(chan struct{}), make(chan struct{})
+					var paused atomic.Bool
+					require.NoError(t, database.Callback().Query().After("gorm:query").Register("hold_priority_snapshot", func(tx *gorm.DB) {
+						if tx.Statement.Table == "channels" && paused.CompareAndSwap(false, true) {
+							close(baselineRead)
+							<-release
+						}
+					}))
+					result := make(chan error, 1)
+					go func() { _, err := model.ReorderChannelPriority(move); result <- err }()
+					<-baselineRead
+					send(priorityProcessCommand{Operation: operation, Move: move})
+					require.Equal(t, "attempt", receive().Event)
+					close(release)
+					require.NoError(t, <-result)
+					require.NoError(t, database.Callback().Query().Remove("hold_priority_snapshot"))
+					remote := receive()
+					if operation == "move" {
+						assert.Equal(t, http.StatusConflict, remote.Status)
+						assert.Equal(t, "channel_order_conflict", remote.Response.Code)
+					} else {
+						require.Empty(t, remote.Error)
+						c, err := model.GetChannelById(1, true)
+						require.NoError(t, err)
+						assert.EqualValues(t, 80, c.GetPriority(), "serialized manual edit must not be lost after comparison")
+						var ability model.Ability
+						require.NoError(t, database.Where("channel_id = ?", 1).First(&ability).Error)
+						require.NotNil(t, ability.Priority)
+						assert.EqualValues(t, 80, *ability.Priority)
+					}
+				})
+			}
 		})
 	}
 }

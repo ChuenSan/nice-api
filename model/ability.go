@@ -280,20 +280,10 @@ func UpdateAbilityStatusByTag(tag string, status bool) error {
 	})
 }
 
+// UpdateAbilityByTag retains the legacy entry point while sharing the atomic
+// channel/tag mutation path, so ability priorities cannot diverge from channels.
 func UpdateAbilityByTag(tag string, newTag *string, priority *int64, weight *uint) error {
-	ability := Ability{}
-	if newTag != nil {
-		ability.Tag = newTag
-	}
-	if priority != nil {
-		ability.Priority = priority
-	}
-	if weight != nil {
-		ability.Weight = *weight
-	}
-	return withChannelOrder(nil, true, func(tx *gorm.DB) error {
-		return tx.Model(&Ability{}).Where("tag = ?", tag).Updates(ability).Error
-	})
+	return EditChannelByTag(tag, newTag, nil, nil, nil, priority, weight, nil, nil)
 }
 
 var fixLock = sync.Mutex{}
