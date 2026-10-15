@@ -55,7 +55,7 @@ func reloadChannelCache() error {
 		if err := tx.Find(&abilities).Error; err != nil {
 			return err
 		}
-		return tx.Where(commonKeyCol+" = ?", channelOrderCoordinatorKey).First(&revision).Error
+		return tx.Where(&Option{Key: channelOrderCoordinatorKey}).First(&revision).Error
 	})
 	if err != nil {
 		return err
@@ -138,7 +138,7 @@ func reloadChannelCache() error {
 // candidates. A failed read fails the selection instead of using stale priority.
 func ensureChannelCacheCurrent() error {
 	var revision Option
-	if err := DB.Where(commonKeyCol+" = ?", channelOrderCoordinatorKey).Find(&revision).Error; err != nil {
+	if err := DB.Where(&Option{Key: channelOrderCoordinatorKey}).Find(&revision).Error; err != nil {
 		return err
 	}
 	channelSyncLock.RLock()
