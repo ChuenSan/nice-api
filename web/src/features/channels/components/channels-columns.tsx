@@ -37,7 +37,6 @@ import { GroupBadge } from '@/components/group-badge'
 import { ProviderBadge } from '@/components/provider-badge'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
-import { TruncatedText } from '@/components/truncated-text'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -85,6 +84,7 @@ import {
 } from '../lib'
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
+import { ChannelNameCell } from './channel-name-cell'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { TaskPluginChannelBadge } from './channel-type-badge'
 import { useChannels } from './channels-provider'
@@ -618,16 +618,15 @@ export function BalanceCell({ channel }: { channel: Channel }) {
 export function useChannelsColumns(
   options: {
     enableSelection?: boolean
+    defaultBaseURLs?: Partial<Record<number, string>> | null
   } = {}
 ): ColumnDef<Channel>[] {
   const { t, i18n } = useTranslation()
   const { sensitiveVisible } = useChannels()
   const enableSelection = options.enableSelection ?? true
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
-  // The column definitions only depend on the translation function, the active
-  // locale, and sensitive-data visibility. Memoizing keeps the array (and every
-  // cell renderer reference) stable across unrelated re-renders, so react-table
-  // does not invalidate the whole row model on each parent render.
+  const defaultBaseURLs = options.defaultBaseURLs
+  // Memoizing preserves cell renderer references until their display data changes.
   return useMemo<ColumnDef<Channel>[]>(
     () => [
       // Checkbox column
@@ -731,10 +730,10 @@ export function useChannelsColumns(
             <div className='flex max-w-full min-w-0 items-center gap-2'>
               <div className='flex max-w-full min-w-0 flex-col gap-1'>
                 <div className='flex max-w-full min-w-0 items-center gap-1.5'>
-                  <TruncatedText
-                    text={sensitiveVisible ? name : SENSITIVE_MASK}
-                    className='font-medium'
-                    maxWidth='max-w-full'
+                  <ChannelNameCell
+                    channel={channel}
+                    sensitiveVisible={sensitiveVisible}
+                    defaultBaseURL={defaultBaseURLs?.[channel.type]}
                   />
                   {isPassThrough && (
                     <TooltipProvider delay={100}>
@@ -1264,6 +1263,6 @@ export function useChannelsColumns(
         meta: { pinned: 'right' as const },
       },
     ],
-    [enableSelection, t, locale, sensitiveVisible]
+    [enableSelection, t, locale, sensitiveVisible, defaultBaseURLs]
   )
 }

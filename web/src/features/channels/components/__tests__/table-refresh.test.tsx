@@ -96,6 +96,9 @@ async function renderChannelsPage(searchGate: () => Promise<void>) {
         },
       }
     }
+    if (url === '/api/channel/default_base_urls') {
+      return { data: { success: true, data: { 1: 'https://api.openai.com' } } }
+    }
     return { data: { success: true, data: ['vip'] } }
   })
   const client = new QueryClient({
@@ -130,6 +133,25 @@ async function renderChannelsPage(searchGate: () => Promise<void>) {
   expect((await screen.findAllByText('prod')).length).toBeGreaterThan(0)
   return get
 }
+
+it('links the channel name to its type default and removes the link when sensitive information is hidden', async () => {
+  await renderChannelsPage(() => Promise.resolve())
+
+  const links = await screen.findAllByRole('link', { name: 'prod' })
+  for (const link of links) {
+    expect(link).toHaveAttribute('href', 'https://api.openai.com')
+    expect(link).toHaveAttribute('rel', 'noreferrer')
+  }
+
+  await userEvent.click(screen.getByRole('button', { name: 'Hide' }))
+  expect(screen.queryByRole('link', { name: 'prod' })).not.toBeInTheDocument()
+  expect(screen.queryByText('prod')).not.toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Show' }))
+  expect(screen.getAllByRole('link', { name: 'prod' }).length).toBeGreaterThan(
+    0
+  )
+})
 
 it('refetches the channel list with the current filters and marks Refresh busy while it runs', async () => {
   let gate = Promise.resolve()
