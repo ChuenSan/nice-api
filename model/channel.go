@@ -108,7 +108,7 @@ func (options ChannelSortOptions) Apply(query *gorm.DB) *gorm.DB {
 		return query.Order(clause.OrderByColumn{
 			Column: clause.Column{Name: columnName},
 			Desc:   options.SortOrder != "asc",
-		})
+		}).Order("id DESC")
 	}
 	if options.IDSort {
 		return query.Order(clause.OrderByColumn{
@@ -119,7 +119,7 @@ func (options ChannelSortOptions) Apply(query *gorm.DB) *gorm.DB {
 	return query.Order(clause.OrderByColumn{
 		Column: clause.Column{Name: "priority"},
 		Desc:   true,
-	})
+	}).Order("id DESC")
 }
 
 func resolveChannelSortOptions(idSort bool, sortOptions []ChannelSortOptions) ChannelSortOptions {
