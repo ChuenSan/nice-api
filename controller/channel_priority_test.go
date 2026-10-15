@@ -87,6 +87,24 @@ func priorityRequest(t *testing.T, handler gin.HandlerFunc, method, path string,
 	return recorder.Code, response
 }
 
+// A missing database must fail channel selection closed: the memory cache may
+// not silently serve priorities whose committed order cannot be verified.
+func TestChannelPrioritySelectionFailsClosedWithoutDatabase(t *testing.T) {
+	previousDB := model.DB
+	previousCache := common.MemoryCacheEnabled
+	model.DB = nil
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.MemoryCacheEnabled = previousCache
+	})
+
+	channel, err := model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
+	require.Error(t, err)
+	require.Nil(t, channel)
+	assert.Contains(t, err.Error(), "database")
+}
+
 func TestChannelPriorityList(t *testing.T) {
 	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
 		t.Run(dialect.kind, func(t *testing.T) {

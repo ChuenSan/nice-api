@@ -226,6 +226,22 @@ it('saves a keyboard move on the second page optimistically with the snapshot an
   ])
 })
 
+it('requires Enter, not a second Space, to save a keyboard move in progress', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: false, code: 'channel_order_failed' },
+  })
+  await renderPriorityPage()
+  const handle = screen.getByRole('button', { name: 'Reorder channel 2' })
+  handle.focus()
+  await userEvent.keyboard(' {ArrowUp}')
+  expect(handle).toHaveAttribute('aria-pressed', 'true')
+  await userEvent.keyboard(' ')
+  expect(post).not.toHaveBeenCalled()
+  expect(handle).toHaveAttribute('aria-pressed', 'true')
+  await userEvent.keyboard('{Enter}')
+  await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+})
+
 it('restores the known previous order on a rejected save without retrying the write', async () => {
   const post = vi.spyOn(api, 'post').mockResolvedValue({
     data: { success: false, code: 'channel_order_failed' },
