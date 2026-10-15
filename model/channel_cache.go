@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
@@ -23,6 +25,8 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
+var channelCacheReloadLock sync.Mutex
+var channelCacheRevision string
 
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {
@@ -30,73 +34,98 @@ func InitChannelCache() {
 		rebuildTaskAliasView()
 		return
 	}
-	newChannelId2channel := make(map[int]*Channel)
-	newChannel2advancedCustomConfig := make(map[int]*kitdto.AdvancedCustomConfig)
-	var channels []*Channel
-	DB.Find(&channels)
-	for _, channel := range channels {
-		newChannelId2channel[channel.Id] = channel
-		if channel.Type == constant.ChannelTypeAdvancedCustom {
-			if config := channel.GetOtherSettings().AdvancedCustom; config != nil {
-				newChannel2advancedCustomConfig[channel.Id] = config
-			}
+	if err := reloadChannelCache(); err != nil {
+		common.SysError("failed to sync channels: " + err.Error())
+	}
+}
+
+// reloadChannelCache publishes one consistent routing view while writers are
+// excluded. Local rebuilds are serialized so an older load cannot publish last.
+func reloadChannelCache() error {
+	channelCacheReloadLock.Lock()
+	defer channelCacheReloadLock.Unlock()
+	err := withChannelOrder(nil, false, func(tx *gorm.DB) error {
+		newChannelId2channel := make(map[int]*Channel)
+		newChannel2advancedCustomConfig := make(map[int]*kitdto.AdvancedCustomConfig)
+		var channels []*Channel
+		if err := tx.Find(&channels).Error; err != nil {
+			return err
 		}
-	}
-	var abilities []*Ability
-	DB.Find(&abilities)
-	groups := make(map[string]bool)
-	for _, ability := range abilities {
-		groups[ability.Group] = true
-	}
-	newGroup2model2channels := make(map[string]map[string][]int)
-	for group := range groups {
-		newGroup2model2channels[group] = make(map[string][]int)
-	}
-	for _, channel := range channels {
-		if channel.Status != common.ChannelStatusEnabled {
-			continue // skip disabled channels
-		}
-		groups := strings.SplitSeq(channel.Group, ",")
-		for group := range groups {
-			models := channel.GetModels()
-			for _, model := range models {
-				if _, ok := newGroup2model2channels[group][model]; !ok {
-					newGroup2model2channels[group][model] = make([]int, 0)
+		for _, channel := range channels {
+			newChannelId2channel[channel.Id] = channel
+			if channel.Type == constant.ChannelTypeAdvancedCustom {
+				if config := channel.GetOtherSettings().AdvancedCustom; config != nil {
+					newChannel2advancedCustomConfig[channel.Id] = config
 				}
-				newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], channel.Id)
 			}
 		}
-	}
-
-	// sort by priority
-	for group, model2channels := range newGroup2model2channels {
-		for model, channels := range model2channels {
-			sort.Slice(channels, func(i, j int) bool {
-				return newChannelId2channel[channels[i]].GetPriority() > newChannelId2channel[channels[j]].GetPriority()
-			})
-			newGroup2model2channels[group][model] = channels
+		var abilities []*Ability
+		if err := tx.Find(&abilities).Error; err != nil {
+			return err
 		}
-	}
+		groups := make(map[string]bool)
+		for _, ability := range abilities {
+			groups[ability.Group] = true
+		}
+		newGroup2model2channels := make(map[string]map[string][]int)
+		for group := range groups {
+			newGroup2model2channels[group] = make(map[string][]int)
+		}
+		for _, channel := range channels {
+			if channel.Status != common.ChannelStatusEnabled {
+				continue // skip disabled channels
+			}
+			groups := strings.SplitSeq(channel.Group, ",")
+			for group := range groups {
+				models := channel.GetModels()
+				for _, model := range models {
+					if _, ok := newGroup2model2channels[group][model]; !ok {
+						newGroup2model2channels[group][model] = make([]int, 0)
+					}
+					newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], channel.Id)
+				}
+			}
+		}
 
-	channelSyncLock.Lock()
-	group2model2channels = newGroup2model2channels
-	//channelsIDM = newChannelId2channel
-	for i, channel := range newChannelId2channel {
-		if channel.ChannelInfo.IsMultiKey {
-			channel.Keys = channel.GetKeys()
-			if channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
-				if oldChannel, ok := channelsIDM[i]; ok {
-					// 存在旧的渠道，如果是多key且轮询，保留轮询索引信息
-					if oldChannel.ChannelInfo.IsMultiKey && oldChannel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
-						channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
+		// sort by priority
+		for group, model2channels := range newGroup2model2channels {
+			for model, channels := range model2channels {
+				sort.Slice(channels, func(i, j int) bool {
+					return newChannelId2channel[channels[i]].GetPriority() > newChannelId2channel[channels[j]].GetPriority()
+				})
+				newGroup2model2channels[group][model] = channels
+			}
+		}
+
+		var revision Option
+		if err := tx.Where(commonKeyCol+" = ?", channelOrderCoordinatorKey).First(&revision).Error; err != nil {
+			return err
+		}
+		channelSyncLock.Lock()
+		group2model2channels = newGroup2model2channels
+		//channelsIDM = newChannelId2channel
+		for i, channel := range newChannelId2channel {
+			if channel.ChannelInfo.IsMultiKey {
+				channel.Keys = channel.GetKeys()
+				if channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
+					if oldChannel, ok := channelsIDM[i]; ok {
+						// 存在旧的渠道，如果是多key且轮询，保留轮询索引信息
+						if oldChannel.ChannelInfo.IsMultiKey && oldChannel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
+							channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
+						}
 					}
 				}
 			}
 		}
+		channelsIDM = newChannelId2channel
+		channel2advancedCustomConfig = newChannel2advancedCustomConfig
+		channelCacheRevision = revision.Value
+		channelSyncLock.Unlock()
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	channelsIDM = newChannelId2channel
-	channel2advancedCustomConfig = newChannel2advancedCustomConfig
-	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
 	// loadPricingAdvancedCustomConfigs. channelSyncLock MUST be released before
@@ -104,6 +133,23 @@ func InitChannelCache() {
 	InvalidatePricingCache()
 	rebuildTaskAliasView()
 	common.SysLog("channels synced from database")
+	return nil
+}
+
+// Each process checks the committed coordinator revision before using routing
+// candidates. A failed read fails the selection instead of using stale priority.
+func ensureChannelCacheCurrent() error {
+	var revision Option
+	if err := DB.Where(commonKeyCol+" = ?", channelOrderCoordinatorKey).Find(&revision).Error; err != nil {
+		return err
+	}
+	channelSyncLock.RLock()
+	current := channelCacheRevision == revision.Value
+	channelSyncLock.RUnlock()
+	if current {
+		return nil
+	}
+	return reloadChannelCache()
 }
 
 func SyncChannelCache(frequency int) {
@@ -123,6 +169,10 @@ func GetRandomSatisfiedChannel(
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
 		return GetChannel(group, model, retry, filters)
+	}
+
+	if err := ensureChannelCacheCurrent(); err != nil {
+		return nil, err
 	}
 
 	channelSyncLock.RLock()
