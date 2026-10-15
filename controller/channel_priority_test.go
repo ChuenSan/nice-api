@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -219,6 +220,204 @@ func TestChannelPriorityStaleAbilityRebuild(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, selected)
 			assert.Equal(t, 2, selected.Id)
+		})
+	}
+}
+
+func TestChannelPriorityValidationAndWriterConflicts(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := os.Getenv(dialect.env)
+			if dialect.env != "" && dsn == "" {
+				t.Skip("disposable database DSN not configured")
+			}
+			database := priorityDatabase(t, dialect.kind, dsn)
+			newChannel := func(id int) model.Channel {
+				priority, weight, tag := int64(40-id), uint(7), "batch"
+				return model.Channel{Id: id, Name: "original", Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &priority, Weight: &weight, Tag: &tag}
+			}
+			read := func() priorityResponse {
+				status, response := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/?page_size=100", nil)
+				require.Equal(t, http.StatusOK, status)
+				require.True(t, response.Success)
+				return response
+			}
+			for _, id := range []int{1, 2, 3} {
+				channel := newChannel(id)
+				require.NoError(t, channel.Insert())
+			}
+			baseline := read()
+			valid := model.ChannelPriorityMove{ExpectedSnapshot: baseline.Data.Snapshot, Page: 1, PageSize: 2, MovedID: 1, TargetID: 2}
+			for _, test := range []struct {
+				name   string
+				change func(*model.ChannelPriorityMove)
+			}{
+				{"missing snapshot", func(m *model.ChannelPriorityMove) { m.ExpectedSnapshot = "" }},
+				{"same channel", func(m *model.ChannelPriorityMove) { m.TargetID = m.MovedID }},
+				{"missing channel", func(m *model.ChannelPriorityMove) { m.TargetID = 99 }},
+				{"outside page", func(m *model.ChannelPriorityMove) { m.TargetID = 3 }},
+				{"zero id", func(m *model.ChannelPriorityMove) { m.MovedID = 0 }},
+				{"negative id", func(m *model.ChannelPriorityMove) { m.TargetID = -1 }},
+				{"zero page", func(m *model.ChannelPriorityMove) { m.Page = 0 }},
+				{"empty page", func(m *model.ChannelPriorityMove) { m.Page = 4 }},
+				{"overflow page", func(m *model.ChannelPriorityMove) { m.Page = int(^uint(0) >> 1) }},
+				{"zero size", func(m *model.ChannelPriorityMove) { m.PageSize = 0 }},
+				{"large size", func(m *model.ChannelPriorityMove) { m.PageSize = 101 }},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					move := valid
+					test.change(&move)
+					status, response := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+					assert.Equal(t, http.StatusBadRequest, status)
+					assert.Equal(t, "invalid_priority_move", response.Code)
+					assert.Equal(t, baseline, read())
+				})
+			}
+			status, response := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", map[string]any{"page": "invalid"})
+			assert.Equal(t, http.StatusBadRequest, status)
+			assert.Equal(t, "invalid_priority_move", response.Code)
+			// Snapshot identity excludes all non-priority channel metadata.
+			weight, tag := uint(55), "renamed"
+			edit := model.Channel{Id: 1, Name: "changed", Models: "other-model", Group: "other-group", Weight: &weight, Tag: &tag, Status: common.ChannelStatusManuallyDisabled}
+			require.NoError(t, edit.Update())
+			assert.Equal(t, baseline.Data.Snapshot, read().Data.Snapshot)
+			status, _ = priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", valid)
+			require.Equal(t, http.StatusOK, status)
+			stored, err := model.GetChannelById(1, true)
+			require.NoError(t, err)
+			assert.Equal(t, "changed", stored.Name)
+			assert.Equal(t, "other-model", stored.Models)
+			assert.Equal(t, "other-group", stored.Group)
+			assert.Equal(t, &weight, stored.Weight)
+			assert.Equal(t, &tag, stored.Tag)
+			for _, test := range []struct {
+				name  string
+				write func() error
+			}{
+				{"single priority", func() error { p := int64(80); return (&model.Channel{Id: 1, Priority: &p}).Update() }},
+				{"full save", func() error {
+					c, err := model.GetChannelById(1, true)
+					if err != nil {
+						return err
+					}
+					p := int64(80)
+					c.Priority = &p
+					return c.Save()
+				}},
+				{"tag priority and rename", func() error {
+					p, next := int64(80), "renamed"
+					return model.EditChannelByTag("batch", &next, nil, nil, nil, &p, nil, nil, nil)
+				}},
+				{"insert", func() error { c := newChannel(4); return c.Insert() }},
+				{"batch insert", func() error { return model.BatchInsertChannels([]model.Channel{newChannel(4), newChannel(5)}) }},
+				{"delete", func() error { return (&model.Channel{Id: 1}).Delete() }},
+				{"batch delete", func() error { _, err := model.BatchDeleteChannels([]int{1, 2}); return err }},
+				{"delete status", func() error { _, err := model.DeleteChannelByStatus(common.ChannelStatusManuallyDisabled); return err }},
+				{"delete disabled", func() error { _, err := model.DeleteDisabledChannel(); return err }},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Ability{}).Error)
+					require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Channel{}).Error)
+					for _, id := range []int{1, 2, 3} {
+						c := newChannel(id)
+						if id == 3 {
+							c.Status = common.ChannelStatusManuallyDisabled
+						}
+						require.NoError(t, c.Insert())
+					}
+					before := read()
+					require.NoError(t, test.write())
+					after := read()
+					require.NotEqual(t, before.Data.Snapshot, after.Data.Snapshot)
+					move := valid
+					move.ExpectedSnapshot = before.Data.Snapshot
+					status, response := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+					assert.Equal(t, http.StatusConflict, status)
+					assert.Equal(t, "channel_order_conflict", response.Code)
+					assert.Equal(t, after, read(), "conflict must preserve the winning write")
+					var abilities []model.Ability
+					require.NoError(t, database.Find(&abilities).Error)
+					assert.Len(t, abilities, after.Data.Total)
+					for _, ability := range abilities {
+						channel, err := model.GetChannelById(ability.ChannelId, true)
+						require.NoError(t, err)
+						assert.Equal(t, channel.Priority, ability.Priority)
+						assert.Equal(t, channel.Tag, ability.Tag)
+					}
+				})
+			}
+			for _, count := range []int{0, 1} {
+				require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Ability{}).Error)
+				require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Channel{}).Error)
+				if count == 1 {
+					c := newChannel(1)
+					require.NoError(t, c.Insert())
+				}
+				before := read()
+				move := valid
+				move.ExpectedSnapshot = before.Data.Snapshot
+				status, _ := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+				assert.Equal(t, http.StatusBadRequest, status)
+				assert.Equal(t, before, read())
+			}
+		})
+	}
+}
+
+func TestChannelPriorityRollback(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := os.Getenv(dialect.env)
+			if dialect.env != "" && dsn == "" {
+				t.Skip("disposable database DSN not configured")
+			}
+			database := priorityDatabase(t, dialect.kind, dsn)
+			for _, id := range []int{1, 2, 3} {
+				p := int64(40 - id)
+				c := model.Channel{Id: id, Key: "secret", Models: "test-model", Group: "default", Status: common.ChannelStatusEnabled, Priority: &p}
+				require.NoError(t, c.Insert())
+			}
+			_, before := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+			var channels []model.Channel
+			var abilities []model.Ability
+			require.NoError(t, database.Order("id").Find(&channels).Error)
+			require.NoError(t, database.Order("channel_id").Find(&abilities).Error)
+			updates := 0
+			require.NoError(t, database.Callback().Update().Before("gorm:update").Register("fail_priority_ability_write", func(tx *gorm.DB) {
+				if tx.Statement.Table == "abilities" {
+					updates++
+					if updates == 2 {
+						tx.AddError(errors.New("injected ability failure"))
+					}
+				}
+			}))
+			status, response := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", model.ChannelPriorityMove{ExpectedSnapshot: before.Data.Snapshot, Page: 1, PageSize: 3, MovedID: 3, TargetID: 1})
+			require.NoError(t, database.Callback().Update().Remove("fail_priority_ability_write"))
+			assert.Equal(t, http.StatusInternalServerError, status)
+			assert.Equal(t, "channel_order_failed", response.Code)
+			_, after := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/", nil)
+			assert.Equal(t, before, after)
+			var actualChannels []model.Channel
+			var actualAbilities []model.Ability
+			require.NoError(t, database.Order("id").Find(&actualChannels).Error)
+			require.NoError(t, database.Order("channel_id").Find(&actualAbilities).Error)
+			assert.Equal(t, channels, actualChannels)
+			assert.Equal(t, abilities, actualAbilities)
+			// An interrupted ability repair must keep the previous complete table.
+			require.NoError(t, database.Callback().Create().Before("gorm:create").Register("fail_priority_rebuild", func(tx *gorm.DB) {
+				if tx.Statement.Table == "abilities" {
+					tx.AddError(errors.New("injected rebuild failure"))
+				}
+			}))
+			_, _, err := model.FixAbility()
+			require.NoError(t, database.Callback().Create().Remove("fail_priority_rebuild"))
+			require.Error(t, err)
+			require.NoError(t, database.Order("channel_id").Find(&actualAbilities).Error)
+			assert.Equal(t, abilities, actualAbilities)
+			selected, err := model.GetRandomSatisfiedChannel("default", "test-model", 0, nil)
+			require.NoError(t, err)
+			require.NotNil(t, selected)
+			assert.Equal(t, 1, selected.Id)
 		})
 	}
 }
