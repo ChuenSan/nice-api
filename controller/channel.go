@@ -209,8 +209,20 @@ func GetAllChannels(c *gin.Context) {
 	}
 
 	var total int64
+	var orderSnapshot string
+	completePriorityView := !enableTagMode && groupFilter == "" && statusFilter == -1 && typeFilter == -1 &&
+		!idSort && c.Query("keyword") == "" && c.Query("model") == "" && c.Query("tag") == "" &&
+		(c.Query("sort_by") == "" || (c.Query("sort_by") == "priority" && sortOptions.SortOrder == "desc"))
 
-	if enableTagMode {
+	if completePriorityView {
+		var err error
+		channelData, total, orderSnapshot, err = model.GetChannelOrderPage(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		if err != nil {
+			common.SysError("failed to read channel order: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "code": "channel_order_failed", "message": "channel_order_failed"})
+			return
+		}
+	} else if enableTagMode {
 		tags, err := model.GetPaginatedChannelTags(buildChannelListQuery(groupFilter, statusFilter, typeFilter), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 		if err != nil {
 			common.SysError("failed to get paginated tags: " + err.Error())
@@ -275,13 +287,17 @@ func GetAllChannels(c *gin.Context) {
 	for _, r := range results {
 		typeCounts[r.Type] = r.Count
 	}
-	common.ApiSuccess(c, gin.H{
+	data := gin.H{
 		"items":       channelData,
 		"total":       total,
 		"page":        pageInfo.GetPage(),
 		"page_size":   pageInfo.GetPageSize(),
 		"type_counts": typeCounts,
-	})
+	}
+	if orderSnapshot != "" {
+		data["order_snapshot"] = orderSnapshot
+	}
+	common.ApiSuccess(c, data)
 	return
 }
 
