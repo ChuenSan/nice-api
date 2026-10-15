@@ -278,11 +278,19 @@ function renderTableBodyContent<TData>(
   return rows.map((row) =>
     props.renderRow
       ? props.renderRow(row, {
+          className: getResolvedRowClassName(props, row),
           getCellClassName: (columnId, className) =>
             cn(getColumnClassName(columnId, 'cell'), className),
         })
       : renderDefaultRow(props, row, getColumnClassName)
   )
+}
+
+function getResolvedRowClassName<TData>(
+  props: DataTableViewProps<TData>,
+  row: Row<TData>
+): string {
+  return cn(props.tableBodyRowClassName, props.getRowClassName?.(row))
 }
 
 function renderEmptyState<TData>(
@@ -320,7 +328,7 @@ function renderDefaultRow<TData>(
     <DataTableRow
       key={row.id}
       row={row}
-      className={cn(props.tableBodyRowClassName, props.getRowClassName?.(row))}
+      className={getResolvedRowClassName(props, row)}
       getColumnClassName={getColumnClassName}
       cellRenderColumns={props.table.options.columns}
     />

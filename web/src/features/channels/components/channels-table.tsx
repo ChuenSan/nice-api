@@ -568,11 +568,7 @@ export function ChannelsTable() {
                 row={row}
                 helpers={helpers}
                 order={priorityOrder}
-                className={
-                  isDisabledChannelRow(row.original)
-                    ? DISABLED_ROW_DESKTOP
-                    : undefined
-                }
+                className={helpers.className}
               />
             )}
             toolbarProps={{
