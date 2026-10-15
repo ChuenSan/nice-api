@@ -301,6 +301,29 @@ func GetAllChannels(c *gin.Context) {
 	return
 }
 
+// ReorderChannelPriority accepts a page move, never client-assigned priorities.
+func ReorderChannelPriority(c *gin.Context) {
+	var move model.ChannelPriorityMove
+	if err := c.ShouldBindJSON(&move); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "invalid_priority_move", "message": "invalid_priority_move"})
+		return
+	}
+	snapshot, err := model.ReorderChannelPriority(move)
+	if err != nil {
+		status, code := http.StatusInternalServerError, "channel_order_failed"
+		if errors.Is(err, model.ErrChannelOrderConflict) {
+			status, code = http.StatusConflict, "channel_order_conflict"
+		} else if errors.Is(err, model.ErrInvalidPriorityMove) {
+			status, code = http.StatusBadRequest, "invalid_priority_move"
+		} else {
+			common.SysError("failed to reorder channels: " + err.Error())
+		}
+		c.JSON(status, gin.H{"success": false, "code": code, "message": code})
+		return
+	}
+	common.ApiSuccess(c, gin.H{"order_snapshot": snapshot})
+}
+
 func buildFetchModelsHeaders(channel *model.Channel, key string) (http.Header, error) {
 	var headers http.Header
 	switch channel.Type {
