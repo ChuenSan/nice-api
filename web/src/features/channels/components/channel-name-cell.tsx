@@ -51,6 +51,7 @@ export function ChannelNameCell(props: ChannelNameCellProps) {
   return (
     <a
       href={baseURL}
+      target='_blank'
       rel='noreferrer'
       referrerPolicy='no-referrer'
       className='min-w-0 rounded-sm hover:underline focus-visible:underline'

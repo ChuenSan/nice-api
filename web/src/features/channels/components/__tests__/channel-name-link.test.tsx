@@ -23,7 +23,7 @@ import { expect, test } from 'vitest'
 import { ChannelNameCell } from '../channel-name-cell'
 
 test.each(['https://upstream.example/v1?region=cn', 'http://localhost:11434'])(
-  'a channel with %s links to its configured address without a referrer',
+  'a channel with %s opens its configured address in a new tab without a referrer',
   async (baseURL) => {
     render(
       <ChannelNameCell
@@ -37,7 +37,7 @@ test.each(['https://upstream.example/v1?region=cn', 'http://localhost:11434'])(
     expect(link).toHaveAttribute('href', baseURL)
     expect(link).toHaveAttribute('rel', 'noreferrer')
     expect(link).toHaveAttribute('referrerpolicy', 'no-referrer')
-    expect(link).not.toHaveAttribute('target')
+    expect(link).toHaveAttribute('target', '_blank')
     await userEvent.setup().tab()
     expect(link).toHaveFocus()
   }
