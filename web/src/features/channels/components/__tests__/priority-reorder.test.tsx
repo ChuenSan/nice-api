@@ -347,7 +347,6 @@ it.each([
 it.each([
   ['filter=production', 'Clear name and model searches'],
   ['model=gpt', 'Clear name and model searches'],
-  ['status=%5B%22enabled%22%5D', 'Clear all channel filters'],
   ['type=%5B%221%22%5D', 'Clear all channel filters'],
   ['group=%5B%22vip%22%5D', 'Clear all channel filters'],
 ])(
@@ -361,6 +360,56 @@ it.each([
     handle.focus()
     await userEvent.keyboard(' {ArrowUp}{Enter}')
     expect(post).not.toHaveBeenCalled()
+  }
+)
+
+it.each([
+  ['enabled', 'enabled'],
+  ['disabled', 'disabled'],
+  ['1', 'enabled'],
+  ['0', 'disabled'],
+])(
+  'submits a move within the %s status filter using its snapshot and scope',
+  async (status, scope) => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: { success: false, code: 'channel_order_failed' },
+    })
+    const items = [
+      {
+        ...channel('A'),
+        id: 4,
+        priority: 10,
+        status: scope === 'enabled' ? 1 : 2,
+      },
+      {
+        ...channel('B'),
+        id: 2,
+        priority: 10,
+        status: scope === 'enabled' ? 1 : 3,
+      },
+    ]
+    await renderPriorityPage({
+      search: `/channels/?status=${encodeURIComponent(JSON.stringify([status]))}`,
+      items,
+      snapshot: `${status}-snapshot`,
+    })
+    const handle = screen.getByRole('button', { name: 'Reorder channel 2' })
+    expect(handle).toHaveAttribute('aria-disabled', 'false')
+    expect(
+      screen.getByText(/Hidden channels keep their priorities/)
+    ).toBeInTheDocument()
+    handle.focus()
+    await userEvent.keyboard(' {ArrowUp}{Enter}')
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel/priority/reorder',
+      expect.objectContaining({
+        expected_snapshot: `${status}-snapshot`,
+        status: scope,
+        moved_id: 2,
+        target_id: 4,
+      }),
+      expect.anything()
+    )
   }
 )
 

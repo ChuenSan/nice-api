@@ -32,15 +32,28 @@ func channelOrderSnapshot(channels []*Channel) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
-// GetChannelOrderPage returns rows, total and the full-set priority snapshot
-// from one coordinated transaction. Secrets are never loaded for this view.
-func GetChannelOrderPage(offset, limit int) (channels []*Channel, total int64, snapshot string, err error) {
+// ApplyChannelStatusFilter shares the enabled/disabled subset across list and
+// reorder queries. Disabled includes both manual and automatic disables.
+func ApplyChannelStatusFilter(query *gorm.DB, statusFilter int) *gorm.DB {
+	if statusFilter == common.ChannelStatusEnabled {
+		return query.Where("status = ?", common.ChannelStatusEnabled)
+	}
+	if statusFilter == 0 {
+		return query.Where("status != ?", common.ChannelStatusEnabled)
+	}
+	return query
+}
+
+// GetChannelOrderPage returns rows, total and the status subset's priority
+// snapshot from one coordinated transaction. A statusFilter of -1 includes all
+// channels; 0 includes both manual and automatic disables. Secrets are omitted.
+func GetChannelOrderPage(offset, limit, statusFilter int) (channels []*Channel, total int64, snapshot string, err error) {
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockChannelOrder(tx); err != nil {
 			return err
 		}
 		var all []*Channel
-		if err := tx.Order("priority DESC, id DESC").Omit("key").Find(&all).Error; err != nil {
+		if err := ApplyChannelStatusFilter(tx, statusFilter).Order("priority DESC, id DESC").Omit("key").Find(&all).Error; err != nil {
 			return err
 		}
 		total, snapshot = int64(len(all)), channelOrderSnapshot(all)
@@ -56,6 +69,7 @@ var ErrChannelOrderConflict = errors.New("channel_order_conflict")
 var ErrInvalidPriorityMove = errors.New("invalid_priority_move")
 
 type ChannelPriorityMove struct {
+	Status           string `json:"status,omitempty"`
 	ExpectedSnapshot string `json:"expected_snapshot"`
 	Page             int    `json:"page"`
 	PageSize         int    `json:"page_size"`
@@ -92,10 +106,20 @@ func ReorderChannelPriority(move ChannelPriorityMove) (string, error) {
 	if move.ExpectedSnapshot == "" || move.Page < 1 || move.PageSize < 1 || move.PageSize > 100 || move.MovedID <= 0 || move.TargetID <= 0 || move.MovedID == move.TargetID {
 		return "", ErrInvalidPriorityMove
 	}
+	statusFilter := -1
+	switch move.Status {
+	case "", "all":
+	case "enabled":
+		statusFilter = common.ChannelStatusEnabled
+	case "disabled":
+		statusFilter = 0
+	default:
+		return "", ErrInvalidPriorityMove
+	}
 	snapshot := ""
 	err := withChannelOrder(nil, true, func(tx *gorm.DB) error {
 		var channels []*Channel
-		if err := tx.Select("id", "priority").Order("priority DESC, id DESC").Find(&channels).Error; err != nil {
+		if err := ApplyChannelStatusFilter(tx, statusFilter).Select("id", "priority").Order("priority DESC, id DESC").Find(&channels).Error; err != nil {
 			return err
 		}
 		if channelOrderSnapshot(channels) != move.ExpectedSnapshot {

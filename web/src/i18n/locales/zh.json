@@ -3593,6 +3593,7 @@
     "Move route down": "下移路由",
     "Move route up": "上移路由",
     "Move source field to target field": "把来源字段移动到目标字段",
+    "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "移动渠道会重新编号符合所选状态的渠道，包括其他分页。隐藏渠道的优先级保持不变。同优先级负载均衡将变为按优先级选择和故障转移。跨页移动请使用优先级字段。",
     "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "移动渠道会按优先级从高到低为全部渠道重新编号，包括其他页面和已停用的渠道。原有同级分流将变为优先选用和失败降级。跨页调整请使用优先级字段。",
     "ms": "毫秒",
     "Multi-key channel: Keys will be": "多密钥渠道：密钥将",

@@ -71,6 +71,7 @@ import type {
   Channel,
   ChannelSortBy,
   GetChannelsResponse,
+  ReorderChannelPriorityParams,
   SearchChannelsResponse,
 } from '../types'
 import { ChannelCard } from './channel-card'
@@ -188,6 +189,15 @@ export function ChannelsTable() {
   // Extract filters from column filters
   const statusFilter =
     (columnFilters.find((f) => f.id === 'status')?.value as string[]) || []
+  const selectedStatus = statusFilter.includes('all')
+    ? undefined
+    : statusFilter[0]?.toLowerCase()
+  let priorityStatus: ReorderChannelPriorityParams['status']
+  if (selectedStatus === 'enabled' || selectedStatus === '1') {
+    priorityStatus = 'enabled'
+  } else if (selectedStatus === 'disabled' || selectedStatus === '0') {
+    priorityStatus = 'disabled'
+  }
   const typeFilter = useMemo(
     () => (columnFilters.find((f) => f.id === 'type')?.value as string[]) || [],
     [columnFilters]
@@ -261,10 +271,7 @@ export function ChannelsTable() {
           groupFilter.length > 0 && !groupFilter.includes('all')
             ? groupFilter[0]
             : undefined,
-        status:
-          statusFilter.length > 0 && !statusFilter.includes('all')
-            ? statusFilter[0]
-            : undefined,
+        status: priorityStatus,
         type:
           typeFilter.length > 0 && !typeFilter.includes('all')
             ? Number(typeFilter[0])
@@ -285,10 +292,7 @@ export function ChannelsTable() {
                 groupFilter.length > 0 && !groupFilter.includes('all')
                   ? groupFilter[0]
                   : undefined,
-              status:
-                statusFilter.length > 0 && !statusFilter.includes('all')
-                  ? statusFilter[0]
-                  : undefined,
+              status: priorityStatus,
               type:
                 typeFilter.length > 0 && !typeFilter.includes('all')
                   ? Number(typeFilter[0])
@@ -307,10 +311,7 @@ export function ChannelsTable() {
                 groupFilter.length > 0 && !groupFilter.includes('all')
                   ? groupFilter[0]
                   : undefined,
-              status:
-                statusFilter.length > 0 && !statusFilter.includes('all')
-                  ? statusFilter[0]
-                  : undefined,
+              status: priorityStatus,
               type:
                 typeFilter.length > 0 && !typeFilter.includes('all')
                   ? Number(typeFilter[0])
@@ -347,7 +348,7 @@ export function ChannelsTable() {
   if (globalFilter?.trim() || modelFilterInput.trim() || modelFilter.trim()) {
     disabledReason = t('Clear name and model searches to reorder channels.')
   } else if (
-    [statusFilter, typeFilter, groupFilter].some((values) =>
+    [typeFilter, groupFilter].some((values) =>
       values.some((value) => value !== 'all')
     )
   ) {
@@ -381,6 +382,7 @@ export function ChannelsTable() {
     )
   }
   const priorityOrder = useChannelPriorityOrder({
+    status: priorityStatus,
     channels,
     snapshot: orderSnapshot,
     total: totalCount,
@@ -541,9 +543,13 @@ export function ChannelsTable() {
         className='flex h-full min-h-0 flex-col gap-2'
       >
         <p className='text-muted-foreground text-sm'>
-          {t(
-            'Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.'
-          )}
+          {priorityStatus
+            ? t(
+                'Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.'
+              )
+            : t(
+                'Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.'
+              )}
         </p>
         <p id={instructionsId} className='text-muted-foreground text-sm'>
           {disabledReason ||

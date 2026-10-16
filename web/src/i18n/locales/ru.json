@@ -3593,6 +3593,7 @@
     "Move route down": "Переместить маршрут вниз",
     "Move route up": "Переместить маршрут вверх",
     "Move source field to target field": "Переместить исходное поле в целевое",
+    "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "Перемещение канала перенумеровывает каналы с выбранным статусом, включая другие страницы. Приоритеты скрытых каналов не меняются. Балансировка между каналами с равным приоритетом заменяется выбором по приоритету и переключением при сбое. Для перемещения между страницами используйте поле приоритета.",
     "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "Перемещение канала перенумеровывает все каналы по убыванию приоритета, включая другие страницы и отключённые каналы. Распределение нагрузки при равном приоритете заменяется выбором по приоритету и переключением при отказе. Для перемещения между страницами используйте поле приоритета.",
     "ms": "мс",
     "Multi-key channel: Keys will be": "Многоключевой канал: Ключи будут",

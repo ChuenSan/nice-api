@@ -3593,6 +3593,7 @@
     "Move route down": "Di chuyển tuyến xuống",
     "Move route up": "Di chuyển tuyến lên",
     "Move source field to target field": "Di chuyển trường nguồn sang trường đích",
+    "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "Di chuyển kênh sẽ đánh số lại các kênh có trạng thái đã chọn, kể cả trên các trang khác. Kênh bị ẩn giữ nguyên độ ưu tiên. Cân bằng tải giữa các kênh cùng độ ưu tiên chuyển thành lựa chọn theo độ ưu tiên và chuyển đổi dự phòng. Dùng trường độ ưu tiên để di chuyển giữa các trang.",
     "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "Di chuyển một kênh sẽ đánh số lại toàn bộ kênh theo độ ưu tiên từ cao xuống thấp, bao gồm các trang khác và các kênh đã tắt. Chia tải giữa các kênh cùng độ ưu tiên sẽ chuyển thành lựa chọn theo độ ưu tiên và chuyển kênh khi lỗi. Dùng trường độ ưu tiên để di chuyển giữa các trang.",
     "ms": "ms",
     "Multi-key channel: Keys will be": "Kênh đa khóa: Các khóa sẽ là",

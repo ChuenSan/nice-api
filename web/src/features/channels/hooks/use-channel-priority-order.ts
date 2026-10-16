@@ -30,7 +30,7 @@ import {
 import { reorderChannelPriority } from '../api'
 import { useChannels } from '../components/channels-provider'
 import { channelsQueryKeys } from '../lib'
-import type { Channel } from '../types'
+import type { Channel, ReorderChannelPriorityParams } from '../types'
 
 type Move = {
   movedId: number
@@ -42,6 +42,7 @@ type Move = {
 }
 
 type PriorityOrderOptions = {
+  status?: ReorderChannelPriorityParams['status']
   channels: Channel[]
   snapshot?: string
   total: number
@@ -150,6 +151,7 @@ export function useChannelPriorityOrder(options: PriorityOrderOptions) {
     let reload = false
     try {
       await mutation.mutateAsync({
+        ...(options.status ? { status: options.status } : {}),
         expected_snapshot: move.snapshot,
         page: options.page,
         page_size: options.pageSize,

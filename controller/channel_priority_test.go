@@ -134,7 +134,7 @@ func TestChannelPriorityList(t *testing.T) {
 			assert.Equal(t, []int{3, 2, 1}, ids)
 			_, explicit := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/?sort_by=priority&sort_order=desc", nil)
 			assert.Equal(t, response.Data.Snapshot, explicit.Data.Snapshot)
-			for _, query := range []string{"group=default", "status=1", "type=1", "tag_mode=true", "sort_by=id", "sort_by=priority&sort_order=asc", "id_sort=true", "keyword=priority"} {
+			for _, query := range []string{"group=default", "type=1", "tag_mode=true", "sort_by=id", "sort_by=priority&sort_order=asc", "id_sort=true", "keyword=priority"} {
 				_, filtered := priorityRequest(t, GetAllChannels, http.MethodGet, "/api/channel/?"+query, nil)
 				assert.Empty(t, filtered.Data.Snapshot, query)
 			}
@@ -210,6 +210,101 @@ func TestChannelPriorityReorder(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, selected)
 				assert.Equal(t, 4, selected.Id, "routing cache=%v", cached)
+			}
+		})
+	}
+}
+
+func TestChannelPriorityStatusScope(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := os.Getenv(dialect.env)
+			if dialect.env != "" && dsn == "" {
+				t.Skip("disposable database DSN not configured")
+			}
+			database := priorityDatabase(t, dialect.kind, dsn)
+			for _, test := range []struct {
+				status string
+				ids    []int
+				hidden []int
+			}{
+				{"enabled", []int{8, 6, 1, 4}, []int{2, 3, 5, 7}},
+				{"disabled", []int{7, 5, 2, 3}, []int{1, 4, 6, 8}},
+			} {
+				t.Run(test.status, func(t *testing.T) {
+					require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Ability{}).Error)
+					require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Channel{}).Error)
+					for i, status := range []int{1, 2, 3, 1, 2, 1, 3, 1} {
+						priority := int64(10)
+						channel := model.Channel{Id: i + 1, Name: "scoped", Key: "secret", Models: "test-model", Group: "default", Status: status, Priority: &priority}
+						require.NoError(t, channel.Insert())
+					}
+					path := "/api/channel/?status=" + test.status
+					status, baseline := priorityRequest(t, GetAllChannels, http.MethodGet, path+"&p=2&page_size=2", nil)
+					require.Equal(t, http.StatusOK, status)
+					require.True(t, baseline.Success)
+					require.NotEmpty(t, baseline.Data.Snapshot)
+					assert.Equal(t, 4, baseline.Data.Total)
+					require.Len(t, baseline.Data.Items, 2)
+					move := map[string]any{"status": test.status, "expected_snapshot": baseline.Data.Snapshot, "page": 2, "page_size": 2, "moved_id": test.ids[2], "target_id": test.ids[3]}
+					for _, invalid := range []struct {
+						name, key string
+						value     any
+					}{
+						{"hidden target", "target_id", test.hidden[0]},
+						{"other page", "target_id", test.ids[0]},
+						{"invalid scope", "status", "unknown"},
+					} {
+						t.Run(invalid.name, func(t *testing.T) {
+							original := move[invalid.key]
+							move[invalid.key] = invalid.value
+							status, rejected := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+							assert.Equal(t, http.StatusBadRequest, status)
+							assert.Equal(t, "invalid_priority_move", rejected.Code)
+							move[invalid.key] = original
+							_, unchanged := priorityRequest(t, GetAllChannels, http.MethodGet, path+"&p=2&page_size=2", nil)
+							assert.Equal(t, baseline, unchanged)
+						})
+					}
+					status, saved := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+					require.Equal(t, http.StatusOK, status)
+					require.True(t, saved.Success)
+					_, refreshed := priorityRequest(t, GetAllChannels, http.MethodGet, path+"&page_size=100", nil)
+					assert.Equal(t, saved.Data.Snapshot, refreshed.Data.Snapshot)
+					ids := make([]int, 0, len(refreshed.Data.Items))
+					for i, channel := range refreshed.Data.Items {
+						ids = append(ids, channel.Id)
+						assert.Equal(t, int64(4-i), channel.GetPriority())
+						assert.Empty(t, channel.Key)
+					}
+					assert.Equal(t, test.ids, ids)
+					for _, id := range test.hidden {
+						channel, err := model.GetChannelById(id, true)
+						require.NoError(t, err)
+						assert.Equal(t, int64(10), channel.GetPriority(), "hidden channel %d", id)
+					}
+					var abilities []model.Ability
+					require.NoError(t, database.Find(&abilities).Error)
+					require.Len(t, abilities, 8)
+					for _, ability := range abilities {
+						channel, err := model.GetChannelById(ability.ChannelId, true)
+						require.NoError(t, err)
+						assert.Equal(t, channel.Priority, ability.Priority)
+					}
+					status, stale := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+					assert.Equal(t, http.StatusConflict, status)
+					assert.Equal(t, "channel_order_conflict", stale.Code)
+					// A status change must invalidate this subset's snapshot even when priority is unchanged.
+					nextStatus := common.ChannelStatusEnabled
+					if test.status == "enabled" {
+						nextStatus = common.ChannelStatusManuallyDisabled
+					}
+					require.NoError(t, (&model.Channel{Id: test.ids[0], Status: nextStatus}).Update())
+					move["expected_snapshot"] = saved.Data.Snapshot
+					status, changed := priorityRequest(t, ReorderChannelPriority, http.MethodPost, "/api/channel/priority/reorder", move)
+					assert.Equal(t, http.StatusConflict, status)
+					assert.Equal(t, "channel_order_conflict", changed.Code)
+				})
 			}
 		})
 	}

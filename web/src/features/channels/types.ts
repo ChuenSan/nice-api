@@ -390,6 +390,7 @@ export interface AddChannelRequest {
 }
 
 export interface ReorderChannelPriorityParams {
+  status?: 'enabled' | 'disabled'
   expected_snapshot: string
   page: number
   page_size: number

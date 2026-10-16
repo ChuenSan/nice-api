@@ -3593,6 +3593,7 @@
     "Move route down": "Move route down",
     "Move route up": "Move route up",
     "Move source field to target field": "Move source field to target field",
+    "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.",
     "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.",
     "ms": "ms",
     "Multi-key channel: Keys will be": "Multi-key channel: Keys will be",

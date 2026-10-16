@@ -3593,6 +3593,7 @@
     "Move route down": "ルートを下へ",
     "Move route up": "ルートを上へ",
     "Move source field to target field": "ソースフィールドをターゲットフィールドに移動",
+    "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "チャネルを移動すると、他のページも含め、選択したステータスのチャネルの優先度が振り直されます。非表示のチャネルの優先度は変わりません。同じ優先度での負荷分散は、優先度による選択とフェイルオーバーに変わります。ページをまたぐ移動には優先度フィールドを使用してください。",
     "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "チャネルを移動すると、他のページや無効なチャネルを含むすべてのチャネルに、優先度の高い順に番号が振り直されます。同一優先度での負荷分散は、優先度による選択と障害時の切り替えに変わります。ページをまたぐ移動には優先度フィールドを使用してください。",
     "ms": "ms",
     "Multi-key channel: Keys will be": "マルチキーチャネル: キーは",

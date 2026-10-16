@@ -3593,6 +3593,7 @@
     "Move route down": "下移路由",
     "Move route up": "上移路由",
     "Move source field to target field": "把來源欄位移動到目標欄位",
+    "Moving a channel renumbers channels matching the selected status, including other pages. Hidden channels keep their priorities. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "移動渠道會重新編號符合所選狀態的渠道，包括其他分頁。隱藏渠道的優先級保持不變。同優先級負載平衡將變為依優先級選擇和故障轉移。跨頁移動請使用優先級欄位。",
     "Moving a channel renumbers every channel globally from highest to lowest priority, including other pages and disabled channels. Equal-priority load sharing becomes priority selection and failover. Use the priority field for moves across pages.": "移動渠道會依優先級由高至低為所有渠道重新編號，包括其他頁面與已停用的渠道。原有同級分流將改為優先選用與失敗降級。跨頁調整請使用優先級欄位。",
     "ms": "毫秒",
     "Multi-key channel: Keys will be": "多金鑰渠道：金鑰將",

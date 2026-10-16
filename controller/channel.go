@@ -136,20 +136,10 @@ func restoreMultiKeyChannelIfAvailable(channel *model.Channel) {
 	channel.SetOtherInfo(info)
 }
 
-func applyChannelStatusFilter(query *gorm.DB, statusFilter int) *gorm.DB {
-	if statusFilter == common.ChannelStatusEnabled {
-		return query.Where("status = ?", common.ChannelStatusEnabled)
-	}
-	if statusFilter == 0 {
-		return query.Where("status != ?", common.ChannelStatusEnabled)
-	}
-	return query
-}
-
 func buildChannelListQuery(group string, statusFilter int, typeFilter int) *gorm.DB {
 	query := model.DB.Model(&model.Channel{})
 	query = model.ApplyChannelGroupFilter(query, group)
-	query = applyChannelStatusFilter(query, statusFilter)
+	query = model.ApplyChannelStatusFilter(query, statusFilter)
 	if typeFilter >= 0 {
 		query = query.Where("type = ?", typeFilter)
 	}
@@ -210,13 +200,13 @@ func GetAllChannels(c *gin.Context) {
 
 	var total int64
 	var orderSnapshot string
-	completePriorityView := !enableTagMode && groupFilter == "" && statusFilter == -1 && typeFilter == -1 &&
+	completePriorityView := !enableTagMode && groupFilter == "" && typeFilter == -1 &&
 		!idSort && c.Query("keyword") == "" && c.Query("model") == "" && c.Query("tag") == "" &&
 		(c.Query("sort_by") == "" || (c.Query("sort_by") == "priority" && sortOptions.SortOrder == "desc"))
 
 	if completePriorityView {
 		var err error
-		channelData, total, orderSnapshot, err = model.GetChannelOrderPage(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		channelData, total, orderSnapshot, err = model.GetChannelOrderPage(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), statusFilter)
 		if err != nil {
 			common.SysError("failed to read channel order: " + err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "code": "channel_order_failed", "message": "channel_order_failed"})
