@@ -22,6 +22,7 @@ import React, {
   createContext,
   useContext,
   useState,
+  useRef,
   useCallback,
   useMemo,
 } from 'react'
@@ -65,6 +66,11 @@ type ChannelsContextType = {
   setBatchMode: (enabled: boolean) => void
   sensitiveVisible: boolean
   setSensitiveVisible: (visible: boolean) => void
+  priorityEditsPending: boolean
+  priorityReorderActive: boolean
+  beginPriorityEdit: () => (() => void) | undefined
+  beginPriorityReorder: () => boolean
+  endPriorityReorder: () => void
   upstream: UpstreamUpdateState
 }
 
@@ -93,6 +99,30 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [batchMode, setBatchMode] = useState(false)
   const [sensitiveVisible, setSensitiveVisible] = useState(true)
 
+  const priorityEdits = useRef(0)
+  const priorityReorder = useRef(false)
+  const [priorityEditsPending, setPriorityEditsPending] = useState(false)
+  const [priorityReorderActive, setPriorityReorderActive] = useState(false)
+  const beginPriorityEdit = useCallback(() => {
+    if (priorityReorder.current) return undefined
+    priorityEdits.current++
+    setPriorityEditsPending(true)
+    return () => {
+      priorityEdits.current--
+      setPriorityEditsPending(priorityEdits.current > 0)
+    }
+  }, [])
+  const beginPriorityReorder = useCallback(() => {
+    if (priorityReorder.current || priorityEdits.current > 0) return false
+    priorityReorder.current = true
+    setPriorityReorderActive(true)
+    return true
+  }, [])
+  const endPriorityReorder = useCallback(() => {
+    priorityReorder.current = false
+    setPriorityReorderActive(false)
+  }, [])
+
   const queryClient = useQueryClient()
   const refreshChannels = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: channelsQueryKeys.all })
@@ -118,6 +148,11 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setBatchMode,
       sensitiveVisible,
       setSensitiveVisible,
+      priorityEditsPending,
+      priorityReorderActive,
+      beginPriorityEdit,
+      beginPriorityReorder,
+      endPriorityReorder,
       upstream,
     }),
     [
@@ -128,6 +163,11 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       idSort,
       batchMode,
       sensitiveVisible,
+      priorityEditsPending,
+      priorityReorderActive,
+      beginPriorityEdit,
+      beginPriorityReorder,
+      endPriorityReorder,
       upstream,
     ]
   )

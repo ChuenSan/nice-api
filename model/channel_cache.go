@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
@@ -23,6 +25,8 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
+var channelCacheReloadLock sync.Mutex
+var channelCacheRevision string
 
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {
@@ -30,10 +34,34 @@ func InitChannelCache() {
 		rebuildTaskAliasView()
 		return
 	}
+	if err := reloadChannelCache(); err != nil {
+		common.SysError("failed to sync channels: " + err.Error())
+	}
+}
+
+// reloadChannelCache reads one consistent routing view and its revision. Local
+// rebuilds are serialized so an older load cannot publish last; a subsequent
+// writer changes the revision and forces the next selection to reload.
+func reloadChannelCache() error {
+	channelCacheReloadLock.Lock()
+	defer channelCacheReloadLock.Unlock()
+	var channels []*Channel
+	var abilities []*Ability
+	var revision Option
+	err := withChannelOrder(nil, false, func(tx *gorm.DB) error {
+		if err := tx.Find(&channels).Error; err != nil {
+			return err
+		}
+		if err := tx.Find(&abilities).Error; err != nil {
+			return err
+		}
+		return tx.Where(&Option{Key: channelOrderCoordinatorKey}).First(&revision).Error
+	})
+	if err != nil {
+		return err
+	}
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*kitdto.AdvancedCustomConfig)
-	var channels []*Channel
-	DB.Find(&channels)
 	for _, channel := range channels {
 		newChannelId2channel[channel.Id] = channel
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
@@ -42,8 +70,6 @@ func InitChannelCache() {
 			}
 		}
 	}
-	var abilities []*Ability
-	DB.Find(&abilities)
 	groups := make(map[string]bool)
 	for _, ability := range abilities {
 		groups[ability.Group] = true
@@ -96,6 +122,7 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
+	channelCacheRevision = revision.Value
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
@@ -104,6 +131,26 @@ func InitChannelCache() {
 	InvalidatePricingCache()
 	rebuildTaskAliasView()
 	common.SysLog("channels synced from database")
+	return nil
+}
+
+// Each process checks the committed coordinator revision before using routing
+// candidates. A failed read fails the selection instead of using stale priority.
+func ensureChannelCacheCurrent() error {
+	if DB == nil {
+		return errors.New("channel cache consistency check failed: database is not initialized")
+	}
+	var revision Option
+	if err := DB.Where(&Option{Key: channelOrderCoordinatorKey}).Find(&revision).Error; err != nil {
+		return err
+	}
+	channelSyncLock.RLock()
+	current := channelCacheRevision == revision.Value
+	channelSyncLock.RUnlock()
+	if current {
+		return nil
+	}
+	return reloadChannelCache()
 }
 
 func SyncChannelCache(frequency int) {
@@ -123,6 +170,10 @@ func GetRandomSatisfiedChannel(
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
 		return GetChannel(group, model, retry, filters)
+	}
+
+	if err := ensureChannelCacheCurrent(); err != nil {
+		return nil, err
 	}
 
 	channelSyncLock.RLock()

@@ -301,6 +301,13 @@ func DeleteModelMetadata(ids []int, removeFromChannels, removePricing bool) (Mod
 	sort.Ints(modelIDs)
 	names := make(map[string]struct{}, len(modelIDs))
 	deleteRecords := func(tx *gorm.DB) error {
+		if removeFromChannels {
+			// Metadata/pricing locks precede this coordinator; channel writers
+			// never acquire metadata/pricing locks while holding it.
+			if err := lockChannelOrder(tx); err != nil {
+				return err
+			}
+		}
 		var records []Model
 		if err := lockForUpdate(tx).Where("id IN ?", modelIDs).Order("id").Find(&records).Error; err != nil {
 			return err

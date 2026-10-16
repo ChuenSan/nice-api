@@ -16,8 +16,10 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T) {
@@ -186,6 +188,21 @@ func TestDistributeHidesTaskPluginDetailsButLogsDiagnostics(t *testing.T) {
 	previousCacheEnabled := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = true
 	t.Cleanup(func() { common.MemoryCacheEnabled = previousCacheEnabled })
+
+	// Routing now verifies the committed order revision in the database even
+	// when no channel matches, so this cache-only fixture needs the coordinator
+	// tables and must not leave the global handle pointed at a closed database.
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(&model.Option{}, &model.Channel{}, &model.Ability{}))
+	previousDB := model.DB
+	model.DB = database
+	t.Cleanup(func() {
+		model.DB = previousDB
+		connection, err := database.DB()
+		require.NoError(t, err)
+		require.NoError(t, connection.Close())
+	})
 
 	const group = "private-plugin-error-test-group"
 	for _, locale := range []struct{ language, message string }{

@@ -209,8 +209,20 @@ func GetAllChannels(c *gin.Context) {
 	}
 
 	var total int64
+	var orderSnapshot string
+	completePriorityView := !enableTagMode && groupFilter == "" && statusFilter == -1 && typeFilter == -1 &&
+		!idSort && c.Query("keyword") == "" && c.Query("model") == "" && c.Query("tag") == "" &&
+		(c.Query("sort_by") == "" || (c.Query("sort_by") == "priority" && sortOptions.SortOrder == "desc"))
 
-	if enableTagMode {
+	if completePriorityView {
+		var err error
+		channelData, total, orderSnapshot, err = model.GetChannelOrderPage(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		if err != nil {
+			common.SysError("failed to read channel order: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "code": "channel_order_failed", "message": "channel_order_failed"})
+			return
+		}
+	} else if enableTagMode {
 		tags, err := model.GetPaginatedChannelTags(buildChannelListQuery(groupFilter, statusFilter, typeFilter), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 		if err != nil {
 			common.SysError("failed to get paginated tags: " + err.Error())
@@ -275,14 +287,56 @@ func GetAllChannels(c *gin.Context) {
 	for _, r := range results {
 		typeCounts[r.Type] = r.Count
 	}
-	common.ApiSuccess(c, gin.H{
+	data := gin.H{
 		"items":       channelData,
 		"total":       total,
 		"page":        pageInfo.GetPage(),
 		"page_size":   pageInfo.GetPageSize(),
 		"type_counts": typeCounts,
-	})
+	}
+	if orderSnapshot != "" {
+		data["order_snapshot"] = orderSnapshot
+	}
+	common.ApiSuccess(c, data)
 	return
+}
+
+// ReorderChannelPriority accepts a page move, never client-assigned priorities.
+func ReorderChannelPriority(c *gin.Context) {
+	// A global reorder requires access to the entire channel set. Read and
+	// write grants are independent, including for scoped personal access tokens.
+	for _, permission := range []authz.Permission{authz.ChannelRead, authz.ChannelWrite} {
+		if !authz.Can(c.GetInt("id"), c.GetInt("role"), permission) {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": common.TranslateMessage(c, i18n.MsgAuthInsufficientPrivilege)})
+			return
+		}
+		if c.GetBool("use_access_token") && !c.GetBool("access_token_legacy") {
+			scope := service.AccessTokenScopeOf(permission)
+			if !service.AccessTokenScopeGranted(c.GetStringSlice("access_token_scopes"), scope) {
+				c.JSON(http.StatusForbidden, gin.H{"success": false, "code": "ACCESS_TOKEN_SCOPE_DENIED", "message": common.TranslateMessage(c, i18n.MsgAuthAccessTokenScope, map[string]any{"Scope": scope})})
+				return
+			}
+		}
+	}
+	var move model.ChannelPriorityMove
+	if err := c.ShouldBindJSON(&move); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "invalid_priority_move", "message": "invalid_priority_move"})
+		return
+	}
+	snapshot, err := model.ReorderChannelPriority(move)
+	if err != nil {
+		status, code := http.StatusInternalServerError, "channel_order_failed"
+		if errors.Is(err, model.ErrChannelOrderConflict) {
+			status, code = http.StatusConflict, "channel_order_conflict"
+		} else if errors.Is(err, model.ErrInvalidPriorityMove) {
+			status, code = http.StatusBadRequest, "invalid_priority_move"
+		} else {
+			common.SysError("failed to reorder channels: " + err.Error())
+		}
+		c.JSON(status, gin.H{"success": false, "code": code, "message": code})
+		return
+	}
+	common.ApiSuccess(c, gin.H{"order_snapshot": snapshot})
 }
 
 func buildFetchModelsHeaders(channel *model.Channel, key string) (http.Header, error) {

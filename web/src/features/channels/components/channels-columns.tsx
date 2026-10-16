@@ -27,7 +27,7 @@ import {
   Shuffle,
   SlidersHorizontal,
 } from 'lucide-react'
-import { useState, useMemo, useContext, useEffect } from 'react'
+import { useState, useMemo, useRef, useContext, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -200,6 +200,7 @@ function PriorityCell({ channel }: { channel: Channel }) {
 function TagPriorityCell({ channel }: { channel: TagRow }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const { beginPriorityEdit, priorityReorderActive } = useChannels()
   const priority = channel.priority
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [pendingValue, setPendingValue] = useState<number | null>(null)
@@ -210,6 +211,7 @@ function TagPriorityCell({ channel }: { channel: TagRow }) {
     <>
       <NumericSpinnerInput
         value={priority ?? 0}
+        disabled={priorityReorderActive}
         onChange={(value) => {
           setPendingValue(value)
           setConfirmOpen(true)
@@ -227,7 +229,20 @@ function TagPriorityCell({ channel }: { channel: TagRow }) {
         confirmText={t('Update')}
         handleConfirm={() => {
           if (pendingValue !== null) {
-            handleUpdateTagField(tag, 'priority', pendingValue, queryClient)
+            const release = beginPriorityEdit()
+            if (!release) return
+            void handleUpdateTagField(
+              tag,
+              'priority',
+              pendingValue,
+              queryClient
+            )
+              .then(() =>
+                queryClient.invalidateQueries({
+                  queryKey: channelsQueryKeys.lists(),
+                })
+              )
+              .finally(release)
           }
           setConfirmOpen(false)
         }}
@@ -248,10 +263,22 @@ function ChannelFieldCell({
   min: number
 }) {
   const queryClient = useQueryClient()
+  const { beginPriorityEdit, priorityReorderActive } = useChannels()
+  const releasePending = useRef<(() => void) | undefined>(undefined)
   const fieldUpdateScheduler = useMemo(
     () =>
       createChannelFieldUpdateScheduler((nextValue) => {
+        const release = releasePending.current
+        releasePending.current = undefined
         void handleUpdateChannelField(channelId, field, nextValue, queryClient)
+          .then(async () => {
+            if (field === 'priority') {
+              await queryClient.invalidateQueries({
+                queryKey: channelsQueryKeys.lists(),
+              })
+            }
+          })
+          .finally(() => release?.())
       }),
     [channelId, field, queryClient]
   )
@@ -261,7 +288,14 @@ function ChannelFieldCell({
   return (
     <NumericSpinnerInput
       value={value ?? 0}
-      onChange={fieldUpdateScheduler.schedule}
+      disabled={field === 'priority' && priorityReorderActive}
+      onChange={(next) => {
+        if (field === 'priority' && !releasePending.current) {
+          releasePending.current = beginPriorityEdit()
+          if (!releasePending.current) return
+        }
+        fieldUpdateScheduler.schedule(next)
+      }}
       onCommit={fieldUpdateScheduler.flush}
       min={min}
     />
